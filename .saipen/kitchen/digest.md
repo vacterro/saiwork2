@@ -1,3 +1,3 @@
-done: shipped SAIWORK2 v0.1.6 to public github.com/vacterro/saiwork2 at 801fd56
+done: polished and visually audited the public GitHub landing page and v0.1.6 Release at 6ca930b
 remaining: T-095 is next; T-093 and T-071 remain formally blocked
-awaiting: packaged Tauri GUI smoke on Windows
+awaiting: verified application screenshot and signed installer assets are not yet available

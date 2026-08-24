@@ -27,7 +27,6 @@
      write that field name next to a concrete id anywhere in this file. -->
 
 ## DOING
-- [/] T-112 [P1] Polish the public GitHub presentation: remove internal task-ledger prose from README, make the landing page concise and user-facing, audit rendered desktop/mobile views, links, metadata, and release discoverability | verify: Polish the public GitHub presentation: remove internal task-ledger prose from README, make the landing page concise and user-facing, audit rendered desktop/mobile views, links, metadata, and release discoverability is complete and the repository-declared verification harness passes | owner: freebuff | claim_time: 2026-08-24T19:03:09Z
 
 ## TODO
 
@@ -58,6 +57,7 @@
 - [ ] T-005 desktop smoke: user launches Tauri app, Code view model list loads (6637 models) with no modelsError | verify: manual (user side)
 
 ## DONE
+- [x] T-112 [P1] Polish the public GitHub presentation: remove internal task-ledger prose from README, make the landing page concise and user-facing, audit rendered desktop/mobile views, links, metadata, and release discoverability | verify: Polish the public GitHub presentation: remove internal task-ledger prose from README, make the landing page concise and user-facing, audit rendered desktop/mobile views, links, metadata, and release discoverability is complete and the repository-declared verification harness passes | owner: freebuff | claim_time: 2026-08-24T19:05:41Z
 - [x] T-094 [AUDIT-PERF-001] P1 keyset-paged queue candidate scan (kill quadratic drain materialization) | verify: cargo test -p saiwork-queue | owner: freebuff | claim_time: 2026-08-24T18:44:18Z
 - [x] T-092 [AUDIT-W2-004] P1 Harness start cancellation-safe ownership (abort during handshake must not orphan process/transport) | verify: cargo test -p engine-deepseek-harness | owner: freebuff | claim_time: 2026-08-24T17:44:41Z
 - [x] T-108 [P1] HUNT S4: OpenCode failed-start cleanup ignores cleanup_attempt Result at lib.rs:855; a force-stop failure is hidden behind the readiness error while process termination stays unproven — surface the cleanup failure and preserve runtime/process authority until exit is proven | verify: cargo test -p engine-opencode --test hostile with injected failed-start teardown failure | owner: freebuff | claim_time: 2026-08-24T17:35:25Z
