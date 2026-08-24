@@ -48,6 +48,8 @@ struct FakePort {
     delete_count: AtomicUsize,
     /// Total `cancel` calls (TASK 24 §9 cancel fail-closed assertions).
     cancel_count: AtomicUsize,
+    /// Remaining simulated adapter cancel failures after a run is accepted.
+    cancel_failures: AtomicUsize,
     /// Simulated runtime workspace binding (TASK 24 §9): when `Some(bound)`,
     /// items targeting a different workspace are NotReady/Wait — the engine
     /// cannot serve that project until explicitly restarted for it.
@@ -67,6 +69,7 @@ impl FakePort {
             delete_failures: AtomicUsize::new(0),
             delete_count: AtomicUsize::new(0),
             cancel_count: AtomicUsize::new(0),
+            cancel_failures: AtomicUsize::new(0),
             bound_workspace: Mutex::new(None),
         })
     }
@@ -105,6 +108,10 @@ impl FakePort {
 
     fn cancel_count(&self) -> usize {
         self.cancel_count.load(Ordering::SeqCst)
+    }
+
+    fn set_cancel_failures(&self, n: usize) {
+        self.cancel_failures.store(n, Ordering::SeqCst);
     }
 }
 
@@ -226,6 +233,12 @@ impl EnginePort for FakePort {
     async fn cancel(&self, session_id: &str, run_id: &str) -> Result<(), PortError> {
         let _ = session_id;
         self.cancel_count.fetch_add(1, Ordering::SeqCst);
+        if self.cancel_failures.load(Ordering::SeqCst) > 0 {
+            self.cancel_failures.fetch_sub(1, Ordering::SeqCst);
+            return Err(PortError::Internal(
+                "simulated handoff cancel failure".into(),
+            ));
+        }
         self.engine
             .cancel(run_id)
             .await
@@ -628,6 +641,126 @@ async fn cancel_during_handoff_intent_is_honored_without_send() {
         0,
         "cancel intent must prevent the send"
     );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn handoff_cancel_delivery_failure_is_warned_and_stays_nonterminal() {
+    let h = Harness::new().await;
+    let entered = Arc::new(tokio::sync::Notify::new());
+    let release = Arc::new(tokio::sync::Notify::new());
+    let entered_for_hook = entered.clone();
+    let release_for_hook = release.clone();
+    let hooks = DispatchHooks {
+        before_send: None,
+        after_send: Some(Arc::new(move || {
+            let entered = entered_for_hook.clone();
+            let release = release_for_hook.clone();
+            Box::pin(async move {
+                entered.notify_one();
+                release.notified().await;
+            })
+        })),
+    };
+    let mut events = h.bus.subscribe();
+    let (m, port) = h.manager(None, Some(hooks));
+    port.set_cancel_failures(1);
+    let item = h.enqueue(&m, "cancel delivery fails", Some("fake:hang"));
+    tokio::time::timeout(Duration::from_secs(5), entered.notified())
+        .await
+        .expect("worker never reached the accepted handoff window");
+
+    m.cancel(&item.id).await.unwrap();
+    release.notify_one();
+    wait_state(&h, &item.id, QueueState::Dispatched, Duration::from_secs(5)).await;
+    tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            let env = events.recv().await.unwrap();
+            if matches!(
+                env.event,
+                saiwork_events::Event::RuntimeWarning { code, .. }
+                    if code == "QUEUE_CANCEL_DELIVERY_FAILED"
+            ) {
+                break;
+            }
+        }
+    })
+    .await
+    .expect("cancel delivery failure must be surfaced");
+    assert_eq!(h.state(&item.id), QueueState::Dispatched);
+
+    // A later explicit retry can still deliver cancellation; the first
+    // failure never fabricated a terminal row or lost the live-run owner.
+    m.cancel(&item.id).await.unwrap();
+    wait_state(&h, &item.id, QueueState::Cancelled, Duration::from_secs(5)).await;
+    assert_eq!(port.cancel_count(), 2);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn untracked_handoff_cancel_persistence_failure_fails_closed() {
+    let h = Harness::new().await;
+    let entered = Arc::new(tokio::sync::Notify::new());
+    let release = Arc::new(tokio::sync::Notify::new());
+    let entered_for_hook = entered.clone();
+    let release_for_hook = release.clone();
+    let hooks = DispatchHooks {
+        before_send: None,
+        after_send: Some(Arc::new(move || {
+            let entered = entered_for_hook.clone();
+            let release = release_for_hook.clone();
+            Box::pin(async move {
+                entered.notify_one();
+                release.notified().await;
+            })
+        })),
+    };
+    let mut events = h.bus.subscribe();
+    let (m, port) = h.manager(None, Some(hooks));
+    let item = h.enqueue(&m, "cancel persistence fails", Some("fake:hang"));
+    tokio::time::timeout(Duration::from_secs(5), entered.notified())
+        .await
+        .expect("worker never reached the accepted handoff window");
+
+    m.cancel(&item.id).await.unwrap();
+    h.db.with_conn(|conn| {
+        conn.execute(
+            "UPDATE queue_items SET dispatch_phase = 'prepare' WHERE id = ?1",
+            rusqlite::params![item.id],
+        )
+        .map_err(saiwork_storage::StorageError::Query)?;
+        Ok(())
+    })
+    .unwrap();
+    m.set_repo_failpoints_for_test(RepoFailpoints {
+        cancel_from_intent_error: Some(Arc::new(|_| true)),
+        ..Default::default()
+    });
+    release.notify_one();
+
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    while m.status() != QueueStatus::Failed {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "discarded persistence failure left queue status {:?}",
+            m.status()
+        );
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    assert_eq!(h.state(&item.id), QueueState::Leased);
+    assert_eq!(port.cancel_count(), 1);
+    tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            let env = events.recv().await.unwrap();
+            if matches!(
+                env.event,
+                saiwork_events::Event::RuntimeError { code, .. }
+                    if code == "QUEUE_DISPATCH_DISABLED"
+            ) {
+                break;
+            }
+        }
+    })
+    .await
+    .expect("durability failure must surface through the canonical error path");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -1641,7 +1774,9 @@ async fn dispatched_row_read_failure_fails_closed_and_never_fabricates_terminal(
             engine_id: ENGINE.into(),
             session_id: None,
             session_mode: SessionMode::New,
-            model: None,
+            // The row must remain DISPATCHED until the injected durability
+            // read fails; a normal fake run can complete before that read.
+            model: Some("fake:hang".into()),
             payload: "failme-item".into(),
         })
         .unwrap();

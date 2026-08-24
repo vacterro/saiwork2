@@ -232,6 +232,10 @@ pub struct RepoFailpoints {
     /// the external adapter cancel for a run whose durable intent did not
     /// persist.
     pub cancel_dispatched_error: Option<Arc<dyn Fn(&str) -> bool + Send + Sync>>,
+    /// When set and the predicate matches, `cancel_from_intent` fails before
+    /// mutation. This proves an accepted run can never be reported terminal
+    /// when the durable cancellation transition did not commit.
+    pub cancel_from_intent_error: Option<Arc<dyn Fn(&str) -> bool + Send + Sync>>,
 }
 
 #[cfg(feature = "failpoints")]
@@ -1035,6 +1039,20 @@ pub fn current_run(&self, id: &str) -> Result<Option<(String, Option<String>)>, 
 
     /// Worker honors a durable cancel intent: LEASED → CANCELLED.
     pub fn cancel_from_intent(&self, id: &str, lease_id: &str) -> Result<bool, QueueError> {
+        #[cfg(feature = "failpoints")]
+        {
+            let f = self
+                .failpoints
+                .lock()
+                .expect("repo failpoints mutex poisoned");
+            if let Some(pred) = &f.cancel_from_intent_error {
+                if pred(id) {
+                    return Err(QueueError::StorageUnavailable(
+                        "injected cancel-from-intent durability failure (test)".into(),
+                    ));
+                }
+            }
+        }
         Ok(self.db.with_conn(|conn| {
             let changed = conn
                 .execute(

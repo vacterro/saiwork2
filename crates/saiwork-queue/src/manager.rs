@@ -1061,7 +1061,19 @@ impl QueueManager {
                     .is_cancel_requested(item_id)
                     .map_err(|e| e.to_string())?
                 {
-                    let _ = self.port.cancel(&session_id, &run_id).await;
+                    if let Err(error) = self.port.cancel(&session_id, &run_id).await {
+                        // The user's durable intent is still authoritative and
+                        // the tracked row stays DISPATCHED. Surface delivery
+                        // failure so cancellation can be retried; never claim
+                        // a terminal state the engine did not prove.
+                        self.bus.publish(Event::RuntimeWarning {
+                            code: "QUEUE_CANCEL_DELIVERY_FAILED".into(),
+                            message: format!(
+                                "queue item {item_id}: handoff cancellation was not delivered ({}); the run remains active and cancellation may be retried",
+                                error.code()
+                            ),
+                        });
+                    }
                 }
             }
             false => {
@@ -1070,15 +1082,35 @@ impl QueueManager {
                 // user's intent is honored and nothing dangles.
                 self.bus.publish(Event::RuntimeWarning {
                     code: "QUEUE_UNTRACKED_RUN".into(),
-                    message: "run accepted but queue row changed during handoff; run cancelled best-effort".into(),
+                    message: "run accepted but queue row changed during handoff; cancellation recovery is required".into(),
                 });
                 if self
                     .repo
                     .is_cancel_requested(item_id)
                     .map_err(|e| e.to_string())?
                 {
-                    let _ = self.port.cancel(&session_id, &run_id).await;
-                    let _ = self.repo.cancel_from_intent(item_id, &lease_id);
+                    self.port.cancel(&session_id, &run_id).await.map_err(|error| {
+                        format!(
+                            "accepted untracked run {run_id} for queue item {item_id}: cancellation delivery failed ({}); dispatch disabled with the durable row left non-terminal",
+                            error.code()
+                        )
+                    })?;
+                    match self.repo.cancel_from_intent(item_id, &lease_id) {
+                        Ok(true) => {
+                            self.publish_changed(item_id, QueueState::Cancelled);
+                            self.wake.notify_one();
+                        }
+                        Ok(false) => {
+                            return Err(format!(
+                                "accepted untracked run {run_id} for queue item {item_id}: cancellation was delivered but the durable terminal transition lost its state/lease guard; dispatch disabled"
+                            ));
+                        }
+                        Err(error) => {
+                            return Err(format!(
+                                "accepted untracked run {run_id} for queue item {item_id}: cancellation was delivered but the durable terminal transition failed ({error}); dispatch disabled"
+                            ));
+                        }
+                    }
                 }
             }
         }

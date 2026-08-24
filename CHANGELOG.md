@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.8 — 2026-08-24
+
+### Honest handoff cancellation
+- Adapter cancel-delivery failures now surface while the tracked run remains non-terminal and retryable.
+- Accepted untracked cleanup failures now disable queue dispatch instead of swallowing adapter or SQLite errors.
+
 ## 0.1.7 — 2026-08-24
 
 ### Fail-closed queued cancellation

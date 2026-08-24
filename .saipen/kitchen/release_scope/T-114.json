@@ -1,0 +1,33 @@
+{
+  "op_id": "scope-c25fccc2e7564d61ac90954e516fc614",
+  "paths": {
+    ".saipen/BOARD.md": "39f05eb55bc61ac2",
+    ".saipen/LOG.md": "394bf6d7e344fa31",
+    ".saipen/STATE.md": "4af90b10f24b0b9f",
+    ".saipen/kitchen/release_scope/T-114.json": "364510cbd7e3d8f7",
+    "CHANGELOG.md": "78a67f2703bf6123",
+    "Cargo.lock": "7dc0327ad2eb648a",
+    "Cargo.toml": "2b29cb84ec018826",
+    "KNOWLEDGE/QUEUE.md": "2dc2a657a4be7ee8",
+    "KNOWLEDGE/TESTING.md": "36c44484c323a928",
+    "README.md": "039d0c0f28b1ab6c",
+    "RELEASE_NOTES.md": "3a57f2da5e55931b",
+    "VERSION": "76f81f64ece28d0b",
+    "apps/desktop/package.json": "989c19034ded96c5",
+    "apps/desktop/src-tauri/tauri.conf.json": "eb45b6e75c59224f",
+    "crates/saiwork-core/tests/release_consistency.rs": "58dd0a12edcb3cee",
+    "crates/saiwork-queue/src/manager.rs": "7c615987113767ff",
+    "crates/saiwork-queue/src/repo.rs": "4ce62eb65ac81a22",
+    "crates/saiwork-queue/tests/queue_manager_tests.rs": "bb89ae8e566ce373",
+    "package-lock.json": "838dd09f59dcec36",
+    "package.json": "3087baf0365f077b",
+    "packages/contracts/package.json": "f7d120be96160eb1"
+  },
+  "project_identity": "v:\\___vac\\__k\\__code\\_ai_stuff_agentic\\_saiwork2",
+  "project_lineage": "lineage-8215a382a4584c44b0f332a13c9ba03f",
+  "recorded_at": "2026-08-24T20:39:37Z",
+  "schema_version": 1,
+  "source_head": "42a3447cc587590a0620881338eb454bc18b925b",
+  "source_tree_fingerprint": "git-delta-v1:40379cc3e7b988241507c6a4e7b47a6d0583f9cc94885cec2d1007ebf9469ec2",
+  "ticket": "T-114"
+}

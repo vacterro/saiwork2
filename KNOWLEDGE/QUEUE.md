@@ -35,7 +35,11 @@ QUEUED ──claim (atomic)──▶ LEASED(prepare) ──begin_send──▶ L
   `FAILED`, which asserts the attempt failed.
 - `cancel_requested` is a durable intent flag honored by the worker at every
   handoff step (before claim effect, before send, after mark_dispatched) —
-  one cancellation owner, no abort storm (§63).
+  one cancellation owner, no abort storm (§63). If adapter delivery fails
+  after a run is tracked, the row remains `DISPATCHED` and a
+  `QUEUE_CANCEL_DELIVERY_FAILED` warning makes retry explicit. If an accepted
+  but untracked handoff cannot deliver cancellation or persist its terminal
+  transition, dispatch fails closed and the durable row stays non-terminal.
 
 Failure paths (explicit, never silent):
 
@@ -49,6 +53,8 @@ UNKNOWN          ──user retry (risk acknowledged)──▶ QUEUED (new attem
 UNKNOWN          ──user cancel──▶ CANCELLED
 QUEUED           ──user cancel──▶ CANCELLED
 LEASED/DISPATCHED──user cancel──▶ CANCELLED (via intent → engine cancel → terminal)
+DISPATCHED       ──cancel delivery failure──▶ DISPATCHED + warning (retryable)
+accepted/untracked ──cancel/SQLite cleanup failure──▶ non-terminal + queue fail-closed
 ```
 
 ## Dispatch boundary and exactly-once truth (§23–§27, §84–§86)
@@ -202,7 +208,8 @@ provider configuration is mirrored (law 25).
 `queue.changed` (item_id, state) after **every** committed transition;
 `queue.dispatch_started` / `queue.dispatch_completed` / `queue.dispatch_failed`
 around the engine handoff and run terminal; `runtime.warning`
-(`QUEUE_OUTCOME_UNKNOWN`) for recovery ambiguity / unknown execution;
+(`QUEUE_OUTCOME_UNKNOWN`, `QUEUE_CANCEL_DELIVERY_FAILED`) for recovery
+ambiguity / unknown execution and retryable cancel-delivery failure;
 `runtime.error` (fail-closed). Events are announcements of
 already-committed SQLite truth — a lagging UI reconciles via
 `queue_snapshot`. Prompt text never appears in events or logs.
