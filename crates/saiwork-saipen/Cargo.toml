@@ -1,0 +1,32 @@
+[package]
+name = "saiwork-saipen"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "Read-only canonical SAIPEN integration (TASK 14): discovery, strict parsing, path security, watcher, snapshot projection."
+
+[features]
+# Test-only action failpoints (termination-confirmation tests). Not reachable
+# in production builds.
+failpoints = []
+
+[dependencies]
+saiwork-events = { workspace = true }
+saiwork-process = { workspace = true }
+async-trait = "0.1"
+notify = { workspace = true }
+serde = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+
+# action_tests injects failpoints at compile time — it can only build with the
+# feature enabled. required-features keeps the documented `cargo test
+# --workspace` gate green (the target is skipped, not broken, by default).
+[[test]]
+name = "action_tests"
+required-features = ["failpoints"]

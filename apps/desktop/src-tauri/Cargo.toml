@@ -1,0 +1,45 @@
+[package]
+name = "saiwork2"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lib]
+name = "saiwork2_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+# Unit-test harness disabled (KNOWN UPSTREAM BUG): on Windows, a test binary
+# that links the Tauri/WebView2 stack fails at process start with
+# 0xC0000139 STATUS_ENTRYPOINT_NOT_FOUND even when WebView2Loader.dll is
+# present (tauri-apps/tauri#14580, still open). This crate is pure Tauri
+# wiring and has no unit tests; real tests live in tests/ (integration) and
+# in saiwork-core. Doc tests are disabled for the same loader reason.
+test = false
+doctest = false
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+tauri-plugin-dialog = "2"
+tauri-plugin-single-instance = "2"
+rfd = "0.15"
+serde.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+saiwork-core.workspace = true
+saiwork-events.workspace = true
+saiwork-process.workspace = true
+saiwork-queue.workspace = true
+saiwork-saipen.workspace = true
+saiwork-files.workspace = true
+engine-fake = { path = "../../../crates/engine-fake" }
+engine-opencode = { path = "../../../crates/engine-opencode" }
+engine-generic-cli = { path = "../../../crates/engine-generic-cli" }
+engine-deepseek-harness = { path = "../../../crates/engine-deepseek-harness" }
+
+[dev-dependencies]
+saiwork-storage.workspace = true
+rusqlite.workspace = true
+tempfile.workspace = true

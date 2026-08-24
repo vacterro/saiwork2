@@ -1,0 +1,40 @@
+[package]
+name = "engine-opencode"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "OpenCode process adapter — discover, probe, launch, readiness, lifecycle (TASK 10)"
+
+[dependencies]
+saiwork-core.workspace = true
+saiwork-events.workspace = true
+saiwork-process.workspace = true
+saiwork-diagnostics.workspace = true
+async-trait = "0.1"
+reqwest.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+uuid.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+saiwork-process = { workspace = true, features = ["failpoints"] }
+
+[[bin]]
+# Hostile-test fixture: a fake "opencode" executable the adapter can be
+# pointed at (TASK 10 §97). Simulates never-ready / wrong-response /
+# delayed-ready / exit-before-ready / auth-required / port-collision.
+name = "fixture_opencode"
+path = "tests/bin/fixture_opencode.rs"
+test = false
+
+[[bin]]
+# TASK 11 protocol fixture: a fake OpenCode server serving the session API
+# (providers, sessions, message runs, event stream, abort) with env-driven
+# failure modes. Mock proves the adapter; real OpenCode proves compatibility.
+name = "fixture_protocol"
+path = "tests/bin/fixture_protocol.rs"
+test = false

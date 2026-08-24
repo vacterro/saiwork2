@@ -1,0 +1,14 @@
+{
+  "name": "@saiwork2/contracts",
+  "version": "0.1.6",
+  "private": true,
+  "type": "module",
+  "main": "src/index.ts",
+  "types": "src/index.ts",
+  "scripts": {
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "typescript": "^5.6.3"
+  }
+}

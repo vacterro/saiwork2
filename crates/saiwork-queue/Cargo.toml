@@ -1,0 +1,30 @@
+[package]
+name = "saiwork-queue"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "Durable queue authority for SAIWORK2 (TASK 13)."
+
+[features]
+# Test-only dispatch failpoints (crash-window tests). Production builds never
+# enable this feature: the hooks are unreachable without it.
+failpoints = []
+
+[dependencies]
+saiwork-events = { workspace = true }
+saiwork-storage = { workspace = true }
+async-trait = "0.1"
+rusqlite = { workspace = true }
+serde = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+uuid = { workspace = true }
+
+[dev-dependencies]
+engine-fake = { path = "../engine-fake" }
+saiwork-core = { workspace = true }
+saiwork-diagnostics = { workspace = true }
+saiwork-process = { workspace = true }
+tempfile = { workspace = true }

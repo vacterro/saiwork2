@@ -1,0 +1,14 @@
+# SAIWORK2 workspace cargo configuration.
+#
+# windows-gnu linking uses `rust-lld` (bundled with every rustup
+# x86_64-pc-windows-gnu toolchain). The default self-contained GNU ld (binutils
+# 2.42+) cannot represent the windows-rs import-lib symbol ordinals when the
+# desktop cdylib is linked: it fails with "export ordinal too large" (see
+# tauri-apps/tauri#10843 and KNOWLEDGE/DECISIONS.md ADR-016). LLD stores
+# 32-bit ordinals and links cleanly.
+#
+# Note: full (non-incremental) builds of `raw-dylib` crates (getrandom 0.3/0.4,
+# windows 0.52/0.53) require `dlltool` on PATH (or the DLLTOOL env var) on this
+# machine; the canonical gate commands export the MinGW bin directory.
+[target.x86_64-pc-windows-gnu]
+linker = "rust-lld"

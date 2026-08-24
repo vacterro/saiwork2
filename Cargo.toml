@@ -1,0 +1,66 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/saiwork-events",
+    "crates/saiwork-storage",
+    "crates/saiwork-process",
+    "crates/saiwork-diagnostics",
+    "crates/saiwork-core",
+    "crates/saiwork-queue",
+    "crates/saiwork-saipen",
+    "crates/saiwork-files",
+    "crates/engine-fake",
+    "crates/engine-opencode",
+    "crates/engine-generic-cli",
+    "crates/engine-deepseek-harness",
+    "apps/desktop/src-tauri",
+]
+
+[workspace.package]
+version = "0.1.6"
+edition = "2021"
+license = "MIT"
+authors = ["SAIWORK2 contributors"]
+
+[workspace.dependencies]
+saiwork-events = { path = "crates/saiwork-events" }
+saiwork-storage = { path = "crates/saiwork-storage" }
+saiwork-process = { path = "crates/saiwork-process" }
+saiwork-diagnostics = { path = "crates/saiwork-diagnostics" }
+saiwork-core = { path = "crates/saiwork-core" }
+saiwork-queue = { path = "crates/saiwork-queue" }
+saiwork-saipen = { path = "crates/saiwork-saipen" }
+saiwork-files = { path = "crates/saiwork-files" }
+engine-fake = { path = "crates/engine-fake" }
+engine-generic-cli = { path = "crates/engine-generic-cli" }
+engine-deepseek-harness = { path = "crates/engine-deepseek-harness" }
+
+# Filesystem watcher for the canonical SAIPEN read path (TASK 14 §110):
+# maintained Rust stack with solid Windows support (ReadDirectoryChangesW
+# under the hood). Narrow per-root watch scope; never a repo-wide recursive
+# watcher. No custom watcher implementation.
+notify = "6"
+
+# Minimal HTTP/1.1 client for the local OpenCode readiness probe (TASK 10
+# §69–§72). No TLS (loopback only), no HTTP/2, no cookies — plain http1 is
+# enough for /doc now and for the SSE streams TASK 11 needs; `json` adds
+# serde_json body helpers used by TASK 11+.
+reqwest = { version = "0.12", default-features = false, features = ["json", "stream"] }
+
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "process", "time", "io-util", "fs", "signal"] }
+uuid = { version = "1", features = ["v4"] }
+rusqlite = { version = "0.32", features = ["bundled"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+tracing-appender = "0.2"
+tempfile = "3"
+
+[profile.release]
+# Keep panic behavior honest in release: small binary, real stack traces.
+panic = "abort"
+strip = true
+lto = true
+codegen-units = 1
