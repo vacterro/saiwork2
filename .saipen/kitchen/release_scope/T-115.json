@@ -1,0 +1,33 @@
+{
+  "op_id": "scope-9db7cc010d784dbcad7309594761371d",
+  "paths": {
+    ".saipen/BOARD.md": "f5aa48524d9df7b3",
+    ".saipen/LOG.md": "769b6e83d2edac04",
+    ".saipen/STATE.md": "f8321db54a79b773",
+    ".saipen/kitchen/release_scope/T-115.json": "a4d792f62ff7f8f6",
+    "CHANGELOG.md": "922ebfb72cb516e2",
+    "Cargo.lock": "f3d736aac8023459",
+    "Cargo.toml": "ffa08141f2f6ea1e",
+    "KNOWLEDGE/ENGINE_CONTRACT.md": "27116cda781231ea",
+    "KNOWLEDGE/TESTING.md": "85c3b554948cee17",
+    "README.md": "4d59af6435aa72f0",
+    "RELEASE_NOTES.md": "4104019fa420d3a5",
+    "VERSION": "e358d84552808a5c",
+    "apps/desktop/package.json": "367ff2259c6fa48f",
+    "apps/desktop/src-tauri/tauri.conf.json": "a6a1b0cf3b1b4556",
+    "crates/engine-generic-cli/Cargo.toml": "c22ec7963f781085",
+    "crates/engine-generic-cli/src/lib.rs": "103f0a42cde2d181",
+    "crates/engine-generic-cli/tests/generic_cli.rs": "f80673508ef5bc07",
+    "crates/saiwork-core/tests/release_consistency.rs": "474231aa7323879f",
+    "package-lock.json": "4f0a84e0ffee6a91",
+    "package.json": "4eb0f5d5a1f5d82f",
+    "packages/contracts/package.json": "195df76d275b9fd4"
+  },
+  "project_identity": "v:\\___vac\\__k\\__code\\_ai_stuff_agentic\\_saiwork2",
+  "project_lineage": "lineage-8215a382a4584c44b0f332a13c9ba03f",
+  "recorded_at": "2026-08-24T20:49:59Z",
+  "schema_version": 1,
+  "source_head": "f5ff0672cf76b79e26e4107b20897a36a22dfeb2",
+  "source_tree_fingerprint": "git-delta-v1:a8135e87bc42907e1b88eb2671ffbeb6593deea87ba29e2c41df503a57ff8561",
+  "ticket": "T-115"
+}

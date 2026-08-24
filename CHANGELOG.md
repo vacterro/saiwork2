@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.9 — 2026-08-24
+
+### Retained CLI cleanup authority
+- Failed prompt delivery now reports teardown failures in `OutcomeUnknown` and keeps the supervised process addressable by run id until exit is proven.
+
 ## 0.1.8 — 2026-08-24
 
 ### Honest handoff cancellation

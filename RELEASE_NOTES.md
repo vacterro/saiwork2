@@ -1,4 +1,4 @@
-# SAIWORK2 v0.1.8
+# SAIWORK2 v0.1.9
 
 Patch release of the durable desktop control plane for coding agents. Windows
 10/11 is the primary platform; the application uses Tauri 2, a Rust core, and
@@ -6,6 +6,8 @@ a React/TypeScript frontend.
 
 ## Highlights
 
+- Generic CLI prompt-delivery failures now keep the supervised child
+  addressable by run id until teardown proves exit.
 - Handoff cancellation failures now remain visible and non-terminal; unsafe
   cleanup failures disable queue dispatch instead of reporting false success.
 - Queued cancellation now fails closed on storage errors while preserving safe

@@ -27,10 +27,9 @@
      write that field name next to a concrete id anywhere in this file. -->
 
 ## DOING
-- [/] T-114 [P1] HUNT S4: queue handoff cancellation discards EnginePort cancel and cancel_from_intent persistence failures, allowing a live run or durable non-terminal row after reported success; surface warning or error and preserve honest state | verify: cargo test -p saiwork-queue --features failpoints | owner: codex | claim_time: 2026-08-24T20:39:30Z
+- [/] T-115 [P1] HUNT S4: Generic CLI failed prompt delivery discards both supervisor stop results and drops process authority before exit proof; retain cleanup authority and report teardown failure with OutcomeUnknown | verify: cargo test -p engine-generic-cli | owner: codex | claim_time: 2026-08-24T20:49:31Z
 
 ## TODO
-- [ ] T-115 [P1] HUNT S4: Generic CLI failed prompt delivery discards both supervisor stop results and drops process authority before exit proof; retain cleanup authority and report teardown failure with OutcomeUnknown | verify: cargo test -p engine-generic-cli
 
 <!-- AUDIT RUN acb-mt632nqg 23.08.26: three waves (CORE / SECOND WAVE / PERFORMANCE), 23 tickets, T-084..T-106, handoff IMPLEMENTATION_AGENT. Priority order below = pick order. -->
 - [ ] T-095 [AUDIT-PERF-002] P1 bounded active queue snapshot page + aggregate counts, Dock badge from backend counts | verify: cargo test -p saiwork-queue + vitest
@@ -61,6 +60,7 @@
 - [ ] T-005 desktop smoke: user launches Tauri app, Code view model list loads (6637 models) with no modelsError | verify: manual (user side)
 
 ## DONE
+- [x] T-114 [P1] HUNT S4: queue handoff cancellation discards EnginePort cancel and cancel_from_intent persistence failures, allowing a live run or durable non-terminal row after reported success; surface warning or error and preserve honest state | verify: cargo test -p saiwork-queue --features failpoints | owner: codex | claim_time: 2026-08-24T20:40:31Z
 - [x] T-113 [P1] HUNT S4: queue cancel_queued storage errors are folded into retry and can spin synchronously without bound; distinguish CAS miss from repository failure and fail closed | verify: cargo test -p saiwork-queue --features failpoints | owner: codex | claim_time: 2026-08-24T20:28:54Z
 - [x] T-112 [P1] Polish the public GitHub presentation: remove internal task-ledger prose from README, make the landing page concise and user-facing, audit rendered desktop/mobile views, links, metadata, and release discoverability | verify: Polish the public GitHub presentation: remove internal task-ledger prose from README, make the landing page concise and user-facing, audit rendered desktop/mobile views, links, metadata, and release discoverability is complete and the repository-declared verification harness passes | owner: freebuff | claim_time: 2026-08-24T19:05:41Z
 - [x] T-094 [AUDIT-PERF-001] P1 keyset-paged queue candidate scan (kill quadratic drain materialization) | verify: cargo test -p saiwork-queue | owner: freebuff | claim_time: 2026-08-24T18:44:18Z

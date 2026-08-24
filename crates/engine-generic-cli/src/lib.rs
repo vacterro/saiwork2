@@ -423,14 +423,51 @@ impl EngineAdapter for GenericCliEngine {
             Ok::<(), String>(())
         }
         .await;
-        if let Err(message) = delivery {
+        if let Err(mut message) = delivery {
             // The process was created and may already be executing: absence
             // of side effects is NOT provable — this is OutcomeUnknown, and
-            // the child is terminated so the run cannot dangle. Never
+            // cleanup must either prove exit or retain run authority. Never
             // Accepted, never DefinitelyRejected.
             warn!(run = %run_id, error = %message, "cli prompt delivery failed; terminating process");
-            let _ = supervisor.stop(&process, true).await;
-            let _ = supervisor.stop(&process, false).await;
+            process.stdin_close().await;
+            let cleanup_failure = match supervisor.stop(&process, true).await {
+                Ok(_) => None,
+                Err(_) if process.has_exited() => None,
+                Err(primary_error) => match supervisor.stop(&process, false).await {
+                    Ok(_) => None,
+                    Err(_) if process.has_exited() => None,
+                    Err(force_error) => Some(format!(
+                        "primary stop failed ({primary_error}); force retry failed ({force_error})"
+                    )),
+                },
+            };
+            if let Some(cleanup_error) = cleanup_failure {
+                // The ProcessSupervisor still owns the child, but that alone
+                // is insufficient: the adapter must retain the RunId so an
+                // explicit cancel can retry teardown and same-session
+                // admission cannot forget a possibly mutating process.
+                let active = Arc::new(ActiveRun {
+                    session_id: req.session_id.clone(),
+                    process: process.clone(),
+                    cancelled: AtomicBool::new(false),
+                });
+                self.runs
+                    .write()
+                    .expect("cli runs mutex poisoned")
+                    .insert(run_id.clone(), active);
+                let runs = self.runs.clone();
+                let run_scope = run_id.clone();
+                let retained_process = process.clone();
+                tokio::spawn(async move {
+                    wait_for_exit(&retained_process).await;
+                    runs.write()
+                        .expect("cli runs mutex poisoned")
+                        .remove(&run_scope);
+                });
+                message.push_str(&format!(
+                    "; cleanup could not prove process exit ({cleanup_error}); the process remains supervisor-owned and addressable as run {run_id} until exit is proven"
+                ));
+            }
             return Ok(SendAcceptance::OutcomeUnknown {
                 run_id: run_id.clone(),
                 message,

@@ -7,7 +7,7 @@
 <p align="center"><strong>A durable desktop control plane for coding agents.</strong></p>
 
 <p align="center">
-  <a href="https://github.com/vacterro/saiwork2/releases/tag/v0.1.8"><img alt="Release 0.1.8" src="https://img.shields.io/badge/release-0.1.8-C8A44D?style=flat-square"></a>
+  <a href="https://github.com/vacterro/saiwork2/releases/tag/v0.1.9"><img alt="Release 0.1.9" src="https://img.shields.io/badge/release-0.1.9-C8A44D?style=flat-square"></a>
   <img alt="Tauri 2" src="https://img.shields.io/badge/Tauri-2-8B6F32?style=flat-square">
   <img alt="Rust core" src="https://img.shields.io/badge/core-Rust-B7410E?style=flat-square">
   <a href="LICENSE"><img alt="MIT license" src="https://img.shields.io/badge/license-MIT-6B5A2B?style=flat-square"></a>

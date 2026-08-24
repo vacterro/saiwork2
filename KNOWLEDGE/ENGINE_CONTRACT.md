@@ -284,7 +284,10 @@ adapters**.
   exist; bare names resolve against PATH incl. `.exe`), not a spawned
   process. Engine stop does not kill active runs; runs are stopped by
   `cancel` or the app-shutdown ProcessSupervisor sweep. Process state stays
-  separate from engine readiness.
+  separate from engine readiness. If prompt delivery fails after spawn, the
+  receipt is `OutcomeUnknown`; teardown must prove exit or the adapter keeps
+  the run-id mapped to the supervisor-owned child until exit, so explicit
+  cancel can retry and no live process disappears from run authority.
 - **Output (§49)**: `ProcessSpec.output_cap_bytes` preserves the bounded
   answer independently of the diagnostic buffer; truncation appends an
   explicit marker. Timeout is bounded (§50); cancellation wins ties.

@@ -14,7 +14,7 @@ use saiwork_core::engine::{
 };
 use saiwork_diagnostics::Diagnostics;
 use saiwork_events::{bus::Subscription, Envelope, Event, EventBus};
-use saiwork_process::ProcessSupervisor;
+use saiwork_process::{ProcessError, ProcessSupervisor, StopHooks};
 use tempfile::TempDir;
 use tokio::time::timeout;
 
@@ -164,6 +164,14 @@ fn script_close_stdin() -> &'static str {
     r#"
 import sys
 sys.stdin.close()
+"#
+}
+
+fn script_close_stdin_then_sleep() -> &'static str {
+    r#"
+import os, time
+os.close(0)
+time.sleep(60)
 "#
 }
 
@@ -687,6 +695,84 @@ async fn child_that_closes_stdin_immediately_is_never_accepted() {
     })
     .await
     .expect("the undelivered child must be terminated and reaped");
+}
+
+#[tokio::test]
+async fn failed_prompt_cleanup_retains_run_authority_until_exit_is_proven() {
+    let tmp = tempfile::tempdir().unwrap();
+    let script = write_script(
+        &tmp,
+        "close_stdin_sleep.py",
+        script_close_stdin_then_sleep(),
+    );
+    let bus = EventBus::new();
+    let supervisor = Arc::new(ProcessSupervisor::new(bus.clone()));
+    supervisor.set_stop_hooks_for_test(StopHooks {
+        before_stop: Some(Arc::new(|id, _| {
+            Some(ProcessError::TerminationTimeout { id: id.clone() })
+        })),
+    });
+    let mut cfg = config(&python(), vec![script]);
+    cfg.max_prompt_bytes = 2 * 1024 * 1024;
+    let engine = GenericCliEngine::new(cfg);
+    engine
+        .start(&EngineStartContext {
+            workspace_id: None,
+            workspace_path: Some(tmp.path().to_path_buf()),
+            bus,
+            diagnostics: Arc::new(Diagnostics::new()),
+            supervisor: supervisor.clone(),
+            report_failure: Arc::new(|_e: &str, _m: &str| {}),
+        })
+        .await
+        .expect("engine start");
+
+    let receipt = engine
+        .send(&SendRequest {
+            session_id: "s1".into(),
+            engine_session_id: "s1".into(),
+            prompt: "x".repeat(256 * 1024),
+            model: None,
+        })
+        .await
+        .expect("send returns an honest outcome");
+    let (run_id, message) = match receipt {
+        saiwork_core::engine::SendAcceptance::OutcomeUnknown { run_id, message } => {
+            (run_id, message)
+        }
+        other => panic!("failed delivery cleanup must be OutcomeUnknown, got {other:?}"),
+    };
+    let retained = engine
+        .active_runs()
+        .iter()
+        .any(|run| run.run_id == run_id && run.session_id == "s1");
+    let owned_processes = supervisor.count();
+
+    // Always clean the RED control too: old code loses adapter authority but
+    // the ProcessSupervisor still owns the child and can sweep it directly.
+    supervisor.set_stop_hooks_for_test(StopHooks::default());
+    if retained {
+        engine
+            .cancel(&run_id)
+            .await
+            .expect("retained run is cancellable");
+    } else {
+        assert!(supervisor.shutdown().await.is_empty());
+    }
+    timeout(Duration::from_secs(10), async {
+        while supervisor.count() > 0 || !engine.active_runs().is_empty() {
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+    })
+    .await
+    .expect("cleanup retry must prove exit and release both authorities");
+
+    assert!(retained, "live child must remain addressable by run id");
+    assert_eq!(owned_processes, 1, "supervisor retains exactly one child");
+    assert!(
+        message.contains("cleanup") && message.contains("exit"),
+        "OutcomeUnknown must report teardown failure: {message}"
+    );
 }
 
 // ---- prompt bound (§46) ----

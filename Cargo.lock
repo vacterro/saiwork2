@@ -964,7 +964,7 @@ checksum = "66b7e2430c6dff6a955451e2cfc438f09cea1965a9d6f87f7e3b90decc014099"
 
 [[package]]
 name = "engine-deepseek-harness"
-version = "0.1.8"
+version = "0.1.9"
 dependencies = [
  "async-trait",
  "engine-fake",
@@ -985,7 +985,7 @@ dependencies = [
 
 [[package]]
 name = "engine-fake"
-version = "0.1.8"
+version = "0.1.9"
 dependencies = [
  "async-trait",
  "saiwork-core",
@@ -1001,7 +1001,7 @@ dependencies = [
 
 [[package]]
 name = "engine-generic-cli"
-version = "0.1.8"
+version = "0.1.9"
 dependencies = [
  "async-trait",
  "engine-fake",
@@ -1018,7 +1018,7 @@ dependencies = [
 
 [[package]]
 name = "engine-opencode"
-version = "0.1.8"
+version = "0.1.9"
 dependencies = [
  "async-trait",
  "reqwest 0.12.28",
@@ -3265,7 +3265,7 @@ checksum = "9774ba4a74de5f7b1c1451ed6cd5285a32eddb5cccb8cc655a4e50009e06477f"
 
 [[package]]
 name = "saiwork-core"
-version = "0.1.8"
+version = "0.1.9"
 dependencies = [
  "async-trait",
  "rusqlite",
@@ -3288,7 +3288,7 @@ dependencies = [
 
 [[package]]
 name = "saiwork-diagnostics"
-version = "0.1.8"
+version = "0.1.9"
 dependencies = [
  "regex",
  "serde",
@@ -3297,7 +3297,7 @@ dependencies = [
 
 [[package]]
 name = "saiwork-events"
-version = "0.1.8"
+version = "0.1.9"
 dependencies = [
  "serde",
  "serde_json",
@@ -3308,7 +3308,7 @@ dependencies = [
 
 [[package]]
 name = "saiwork-files"
-version = "0.1.8"
+version = "0.1.9"
 dependencies = [
  "serde",
  "tempfile",
@@ -3317,7 +3317,7 @@ dependencies = [
 
 [[package]]
 name = "saiwork-process"
-version = "0.1.8"
+version = "0.1.9"
 dependencies = [
  "libc",
  "saiwork-events",
@@ -3330,7 +3330,7 @@ dependencies = [
 
 [[package]]
 name = "saiwork-queue"
-version = "0.1.8"
+version = "0.1.9"
 dependencies = [
  "async-trait",
  "engine-fake",
@@ -3350,7 +3350,7 @@ dependencies = [
 
 [[package]]
 name = "saiwork-saipen"
-version = "0.1.8"
+version = "0.1.9"
 dependencies = [
  "async-trait",
  "notify",
@@ -3365,7 +3365,7 @@ dependencies = [
 
 [[package]]
 name = "saiwork-storage"
-version = "0.1.8"
+version = "0.1.9"
 dependencies = [
  "rusqlite",
  "serde",
@@ -3378,7 +3378,7 @@ dependencies = [
 
 [[package]]
 name = "saiwork2"
-version = "0.1.8"
+version = "0.1.9"
 dependencies = [
  "engine-deepseek-harness",
  "engine-fake",

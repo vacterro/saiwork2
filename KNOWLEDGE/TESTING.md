@@ -306,15 +306,16 @@ under flood, idle CPU ≈ 0, no listener/watcher multiplication.
 
 ## Cross-engine suites (TASK 17, `engine-generic-cli`)
 
-- `crates/engine-generic-cli/tests/generic_cli.rs` (15): capability honesty
+- `crates/engine-generic-cli/tests/generic_cli.rs` (18): capability honesty
   (sessions/resume/streaming/cancel/models exactly as declared), start
   probe (missing executable fails), send-before-start rejected, echo run →
   MessageCompleted with full preserved output, nonzero exit → MessageFailed
   with code+stderr, real output streams as one terminal delta, oversized
   output bounded with truncation marker, timeout terminates + fails,
   cancel terminates + MessageCancelled (cancel wins ties), cancel-unknown
-  no-op, prompt cap, engine-stop-does-not-kill-active-run, env config
-  absent/present/malformed, capabilities never overclaim. Real `python`
+  no-op, prompt cap, prompt-delivery failure → OutcomeUnknown, failed cleanup
+  retains run-id/process authority until proven exit, engine-stop-does-not-
+  kill-active-run, env config absent/present/malformed, capabilities never overclaim. Real `python`
   subprocesses through ProcessSupervisor (harness allowance §120).
 - `crates/engine-generic-cli/tests/cross_engine.rs` (5): registry lists
   fake+generic-cli under distinct ids (unique EngineId), one engine's

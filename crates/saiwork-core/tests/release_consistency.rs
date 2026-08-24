@@ -21,7 +21,7 @@ fn release_identity_consistent() {
         .parent()
         .expect("workspace root");
 
-    let expected = "0.1.8";
+    let expected = "0.1.9";
 
     // 1. VERSION file (release-facing source of truth).
     let version = fs::read_to_string(workspace_root.join("VERSION"))
