@@ -27,6 +27,7 @@
      write that field name next to a concrete id anywhere in this file. -->
 
 ## DOING
+- [/] T-112 [P1] Polish the public GitHub presentation: remove internal task-ledger prose from README, make the landing page concise and user-facing, audit rendered desktop/mobile views, links, metadata, and release discoverability | verify: Polish the public GitHub presentation: remove internal task-ledger prose from README, make the landing page concise and user-facing, audit rendered desktop/mobile views, links, metadata, and release discoverability is complete and the repository-declared verification harness passes | owner: freebuff | claim_time: 2026-08-24T18:59:18Z
 
 ## TODO
 

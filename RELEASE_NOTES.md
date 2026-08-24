@@ -1,50 +1,52 @@
-# SAIWORK2 V1 — Release Notes (0.1.0)
+# SAIWORK2 v0.1.6
 
-First release-grade desktop cockpit for coding agents. Windows 10/11
-primary; built with Tauri 2 + Rust core + React/TS frontend.
+First public source release of the durable desktop control plane for coding
+agents. Windows 10/11 is the primary platform; the application uses Tauri 2,
+a Rust core, and a React/TypeScript frontend.
 
-## What's in V1
+## Highlights
 
-- **OpenCode engine** (primary): local `opencode serve` process owned by the
-  ProcessSupervisor; models, sessions (create/select/resume), streaming
-  answers, tool activity, per-run cancellation, engine lifecycle.
-- **Generic CLI engine** (opt-in second production engine): one-shot trusted
-  executable, prompt via stdin, bounded output/timeout, run==process cancel.
-  Configure with `SAIWORK2_CLI_EXECUTABLE` (etc.).
-- **Durable queue**: add / edit / reorder / pause / resume / cancel / safe
-  retry; crash-recovery matrix with no duplicate dispatch; concurrency = 1.
-- **SAIPEN**: read-only watcher projection (state/board/next/blocker),
-  canonical `status` + `validate` actions through the process supervisor,
-  SAIPENBAR status strip. SAIWORK2 never writes canonical SAIPEN files.
-- **Workspaces**: open/select/switch; one agent run per workspace
-  (same-workspace runs are serialized; different workspaces run
-  concurrently).
-- **Diagnostics**: redacted snapshot, copyable; logs under the data root.
+- OpenCode sessions with model selection, streaming responses, tool activity,
+  permission handling, cancellation, and history restoration.
+- Automatic engine startup when a project is selected and automatic session
+  creation on the first prompt.
+- Safe session deletion plus turn undo/redo for engines that support it.
+- Structured single-choice, multi-choice, and custom-text agent questions.
+- Absolute and live relative timestamps for every message and tool call.
+- Durable SQLite prompt queue with editing, ordering, pause/resume, recovery,
+  and fail-closed `UNKNOWN` outcomes.
+- Opt-in Generic CLI engine with bounded output and timeout.
+- Experimental DeepSeek Harness ACP adapter behind the same capability-driven
+  engine boundary.
+- SAIPEN project status, validation, Board, and Knowledge views without a
+  second canonical writer.
 
-## External requirements
+## Safety model
 
-- OpenCode on PATH for the primary engine (`npm i -g opencode-ai` or the
-  binary). SAIWORK2 uses OpenCode's existing provider/auth setup — no keys
-  are entered in SAIWORK2.
-- WebView2 runtime (preinstalled on Windows 10/11).
+- One mutating agent run per workspace; different workspaces remain isolated
+  and may run concurrently.
+- One process supervisor owns every managed child process.
+- Provider credentials remain in engine-owned authentication stores.
+- No account, telemetry service, or SAIWORK2 cloud.
+- Queue prompts are stored as plaintext in the local SQLite database.
 
-## Data facts
+## Build from source
 
-- Data root: `SAIWORK2_DATA_DIR` → `portable.flag` → OS app-data. Portable
-  mode keeps everything under `<exe>/data`.
-- SAIWORK2 stores: SQLite (settings, project references, session metadata,
-  **queue prompts in plaintext**), logs, runtime state. It does not store
-  provider credentials, transcript mirrors, or SAIPEN canonical mirrors.
-- No telemetry, no account, no cloud.
+Install Node.js 20+, Rust stable with the Windows MSVC toolchain, Visual Studio
+Build Tools C++, WebView2, and OpenCode on `PATH`, then run:
 
-## Known limitations (P2+)
+```bash
+npm install
+npm run tauri build
+```
 
-- Freebuff deferred (remote-cloud-only; Node-only SDK).
-- SAIPEN→Queue handoff deferred (no canonical CLI Continue).
-- No worktrees/terminal/IDE/browser/collaboration/marketplace.
-- Drag-and-drop queue reorder not included (buttons used).
+This GitHub release provides source archives. MSI and NSIS installers can be
+built locally but are not attached to the public release yet.
 
-## Release artifacts
+## Current limitations
 
-- `SAIWORK2_0.1.0_x64-setup.exe` (NSIS), `SAIWORK2_0.1.0_x64_en-US.msi`
-  (WiX) under `target/release/bundle/`.
+- Windows-first; packaged macOS/Linux releases are not provided.
+- No terminal emulator, full IDE, worktree isolation, or cloud collaboration.
+- DeepSeek Harness remains experimental and depends on upstream provider
+  tooling for a real-provider smoke test.
+- SAIPEN actions do not automatically enqueue agent work.

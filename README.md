@@ -4,145 +4,140 @@
 
 <h1 align="center">SAIWORK2</h1>
 
-<p align="center"><strong>A durable desktop cockpit for coding agents.</strong></p>
+<p align="center"><strong>A durable desktop control plane for coding agents.</strong></p>
 
 <p align="center">
-  <img alt="Version 0.1.6" src="https://img.shields.io/badge/version-0.1.6-C8A44D?style=flat-square">
+  <a href="https://github.com/vacterro/saiwork2/releases/tag/v0.1.6"><img alt="Release 0.1.6" src="https://img.shields.io/badge/release-0.1.6-C8A44D?style=flat-square"></a>
   <img alt="Tauri 2" src="https://img.shields.io/badge/Tauri-2-8B6F32?style=flat-square">
   <img alt="Rust core" src="https://img.shields.io/badge/core-Rust-B7410E?style=flat-square">
   <a href="LICENSE"><img alt="MIT license" src="https://img.shields.io/badge/license-MIT-6B5A2B?style=flat-square"></a>
 </p>
 
 <p align="center">
-  <a href="#what-v1-can-do">Features</a> ·
-  <a href="#build--run">Build and run</a> ·
-  <a href="KNOWLEDGE/INDEX.md">Architecture knowledge</a> ·
-  <a href="CHANGELOG.md">Changelog</a>
+  <a href="#highlights">Highlights</a> ·
+  <a href="#quick-start">Quick start</a> ·
+  <a href="#architecture">Architecture</a> ·
+  <a href="#documentation">Documentation</a> ·
+  <a href="https://github.com/vacterro/saiwork2/releases">Releases</a>
 </p>
 
-Desktop orchestration cockpit for coding agents — **v0.1.6**.
+SAIWORK2 keeps projects, agent sessions, queued prompts, tool activity, and
+engine processes in one predictable desktop workspace. The React interface
+projects authoritative Rust-core state; it does not own processes, persistence,
+or recovery.
 
-One workspace cockpit, one durable queue, one process lifecycle, one event
-model, one SAIPEN control plane, one predictable desktop UX. The UI is a
-projection of Rust-core state; it never becomes the authority for runtime or
-durable state.
+Windows-first. OpenCode is the primary local engine, with an opt-in Generic CLI
+adapter for trusted one-shot tools.
 
-**Status: V1 release + multi-engine gate (TASK 24 DONE).** All 24 build
-tasks are complete (see `KNOWLEDGE/ROADMAP.md`). SAIWORK2 is a Tauri 2
-desktop app with a Rust core and a React/TS frontend. The primary engine is
-**OpenCode** (local `opencode serve` child process) — SUPPORTED. A second
-production engine, **Generic CLI** (trusted one-shot executable), is
-supported when explicitly configured. **DeepSeek Harness is EXPERIMENTAL**
-(upstream Developer Preview; adapter + queue target proven against a
-deterministic ACP fixture, real-provider smoke blocked externally — see
-`KNOWLEDGE/DEEPSEEK_HARNESS.md`). The durable queue and the SAIPEN
-read/watch/action integration are fully implemented. **Freebuff is
-deferred** (remote-cloud-only, Node-only SDK — see
-`KNOWLEDGE/DECISIONS.md` ADR-036).
+## Highlights
 
-## What V1 can do
+- **Start working immediately.** Opening a project starts or rebinds its engine;
+  sending the first prompt creates a session automatically.
+- **One composer, clear intent.** Enter sends by default, Shift+Enter adds a
+  line, and Ctrl+Enter places work in the durable queue. The mapping is
+  configurable.
+- **Durable queued work.** Add, edit, reorder, pause, resume, cancel, and retry
+  prompts without turning the frontend into a second queue authority.
+- **Agent-native conversations.** Streaming answers, tool activity, permission
+  decisions, structured questions, session deletion, and turn undo/redo share
+  one transcript.
+- **Time is visible.** Every message and tool call shows an absolute timestamp
+  and a live relative age.
+- **Failure stays honest.** Unknown outcomes remain `UNKNOWN`; uncertain work is
+  never silently retried, and active-run ownership fails closed.
+- **SAIPEN-aware.** Project state, task, blocker, validation, Board, and
+  Knowledge views are available without mirroring canonical `.saipen` files.
 
-- Open/select/switch projects; SAIPEN presence indicator per project.
-- Auto-start/rebind the selected OpenCode engine when a project opens; manual
-  start/stop remains available; select models by canonical ID.
-- Auto-create, select, resume and safely delete OpenCode sessions; send
-  prompts, watch streamed answers, cancel active runs, and undo/redo turns.
-- Answer structured agent questions (single/multi-select or custom text) and
-  see absolute plus live relative timestamps on every message/tool call.
-- Queue future work (add / edit / reorder / pause / resume / cancel /
-  retry-safe items) through the one durable QueueManager.
-- Run canonical SAIPEN actions (Status, Validate) and read-only
-  Board/Knowledge views; SAIPENBAR shows project/state/task/next/blocker/
-  queue/active-agents/engine/model/validation truth.
-- Diagnostics panel with a redacted snapshot (copyable); logs under the
-  data root.
-- Multiple workspaces and sessions; **one agent run per workspace** at a
-  time (same-workspace second runs are rejected with a clear message; the
-  queue waits), different workspaces run concurrently (ADR-038).
+## Quick start
 
-## Concurrency policy (V1)
-
-- Same-session: REJECT (one agent turn per thread).
-- Same-workspace: serialized — one mutating agent run per physical
-  workspace (no worktrees in V1).
-- Different workspaces: concurrent and isolated.
-- Durable queue: concurrency = 1 (single dispatcher; the strongest proven
-  correctness boundary).
-
-## Engines
-
-| Engine | Status | Notes |
-| --- | --- | --- |
-| OpenCode | production | `opencode` ≥ 1.18 on PATH; sessions, models, streaming, tools, cancel, structured questions, undo/redo |
-| Generic CLI | production, opt-in | one-shot trusted executable; configured via `SAIWORK2_CLI_EXECUTABLE` (+ optional `SAIWORK2_CLI_ARGS`, `SAIWORK2_CLI_LABEL`, `SAIWORK2_CLI_MAX_OUTPUT_BYTES`, `SAIWORK2_CLI_TIMEOUT_MS`); no shell, prompt via stdin, bounded output/timeout |
-| FakeEngine | dev/test only | registered in debug builds for the failure-simulation suites (`/sim:normal`, `/sim:slow`, `/sim:hang`, …); never in release |
-| Freebuff | deferred | remote-cloud-only; Node ≥ 22 SDK; credential vault required (ADR-036) |
-
-## Prerequisites
-
-- Windows 10/11 (primary), macOS/Linux buildable via the Tauri toolchain.
-- Rust stable toolchain.
-- Node 20+ (npm) for the frontend build.
-- WebView2 runtime (preinstalled on Win 10/11).
-- OpenCode for the primary engine (`npm i -g opencode-ai` or the binary on
-  PATH). SAIWORK2 uses OpenCode's own provider/auth ecosystem — you do not
-  re-enter provider keys in SAIWORK2.
-
-## Build / run
+Prerequisites: Windows 10/11 with WebView2, Node.js 20+, Rust stable with the
+MSVC toolchain, Visual Studio Build Tools C++, and
+[OpenCode](https://opencode.ai/) on `PATH`.
 
 ```bash
-npm install                 # frontend + contracts workspaces
-cargo build --workspace     # compile core crates + shell (first run is long)
-npm run tauri dev           # launch the desktop app (dev)
-npm run tauri build         # release build + MSI/NSIS bundles
+npm install
+npm run tauri dev
 ```
 
-The app: open a project → select a model if needed → type a prompt. The engine
-and first session start automatically. Enter sends by default; enable
-`Enter queues` to make Enter durable-enqueue and Ctrl+Enter send.
+Open a project, select a model when needed, and type a prompt. Engine and first
+session startup are automatic; explicit start/stop controls remain available.
 
-## Data root
+Build Windows installers locally with:
 
-`SAIWORK2_DATA_DIR` → `portable.flag` beside the executable (`<exe>/data`)
-→ OS application-data directory. Exactly one writable root
-(`KNOWLEDGE/PORTABILITY.md`). Portable mode keeps everything (DB, logs,
-settings) under the portable `data/`; it never drifts to OS AppData.
-
-What SAIWORK2 stores: SQLite DB (app settings, project references, session
-metadata, durable queue prompts — plaintext, documented in
-`KNOWLEDGE/STORAGE.md` + `KNOWLEDGE/QUEUE.md`), logs, runtime dir.
-What it never stores: provider credentials (engines own them), OpenCode
-transcript mirrors, SAIPEN canonical file mirrors.
-
-## Known V1 limitations (P2+, safe to defer)
-
-- No terminal emulator, no full IDE/file explorer, no browser, no
-  collaboration, no plugin marketplace, no worktrees.
-- Freebuff integration deferred (no stable local-execution surface).
-- SAIPEN→Queue handoff deferred (canonical SAIPEN has no CLI Continue).
-- Windows path matrix beyond the tested set (spaces/Unicode/portable) and
-  installer-driven upgrade flows are exercised on demand.
-
-## Repository layout
-
-```text
-apps/desktop/            Tauri 2 shell + React/TS/Vite frontend
-crates/
-  saiwork-events/        canonical event taxonomy + bounded EventBus
-  saiwork-storage/       SQLite, migrations, workspaces/settings/session meta
-  saiwork-process/       ProcessSupervisor (single child-process owner)
-  saiwork-diagnostics/   secret redaction + bounded diagnostics
-  saiwork-core/          orchestration: app, workspaces, sessions, engine registry
-  saiwork-queue/         durable queue (single authority)
-  saiwork-saipen/        canonical SAIPEN read/watch/actions
-  engine-fake/           FakeEngine — deterministic test engine
-  engine-opencode/       OpenCode process adapter
-  engine-generic-cli/    Generic CLI one-shot adapter
-packages/contracts/      shared TS types mirroring the Rust contract
-KNOWLEDGE/               engineering memory (INDEX.md is the map)
-scripts/                 tooling (e.g. gen-icons.mjs)
+```bash
+npm run tauri build
 ```
+
+## Engine support
+
+- **OpenCode — production:** local `opencode serve`; sessions, models,
+  streaming, tools, structured questions, cancellation, and undo/redo.
+- **Generic CLI — production, opt-in:** trusted executable, prompt over stdin,
+  bounded output and timeout, no shell interpolation.
+- **DeepSeek Harness — experimental:** ACP adapter and deterministic queue path
+  are implemented; real-provider availability still depends on upstream tooling.
+- **FakeEngine — development only:** deterministic failure simulation; excluded
+  from release builds.
+
+## Architecture
+
+```mermaid
+flowchart LR
+    UI[React / TypeScript UI] --> Core[Rust orchestration core]
+    Core --> Queue[SQLite durable queue]
+    Core --> Process[Process supervisor]
+    Core --> Storage[Workspace and session metadata]
+    Core --> Saipen[SAIPEN read / watch / actions]
+    Core --> Engines[Engine adapters]
+    Engines --> OpenCode[OpenCode]
+    Engines --> CLI[Generic CLI]
+    Engines --> Harness[DeepSeek Harness]
+```
+
+The boundaries are deliberate: one process owner, one durable queue owner, one
+event bus, and one desktop runtime. Different workspaces may run concurrently;
+mutating agent runs inside the same workspace are serialized.
+
+## Data and privacy
+
+- Local desktop app: no account, telemetry service, or SAIWORK2 cloud.
+- Provider credentials stay in each engine's existing authentication store.
+- SQLite stores settings, project references, session metadata, and queued
+  prompts. Queue prompts are plaintext at rest.
+- Portable mode keeps the database, logs, settings, and runtime data under one
+  deterministic `data/` directory beside the executable.
+
+## Development
+
+```bash
+cargo test --workspace --exclude saiwork2
+cargo test -p saiwork2
+npm run typecheck
+npm test
+npm run build
+```
+
+The Tauri development and release shell requires the Windows MSVC toolchain.
+Core crates can also be tested with the Windows GNU toolchain.
+
+## Documentation
+
+- [Product contract](KNOWLEDGE/PRODUCT.md)
+- [Architecture and ownership laws](KNOWLEDGE/ARCHITECTURE.md)
+- [Engine contract](KNOWLEDGE/ENGINE_CONTRACT.md)
+- [Queue guarantees](KNOWLEDGE/QUEUE.md)
+- [Process lifecycle](KNOWLEDGE/PROCESS_LIFECYCLE.md)
+- [Testing strategy](KNOWLEDGE/TESTING.md)
+- [Changelog](CHANGELOG.md) and [release notes](RELEASE_NOTES.md)
+
+## Current limitations
+
+SAIWORK2 is Windows-first and is not a full IDE. It does not yet include a
+terminal emulator, worktree isolation, cloud collaboration, or an automatic
+SAIPEN-to-queue handoff. See the [roadmap](KNOWLEDGE/ROADMAP.md) for engineering
+status and planned work.
 
 ## License
 
-MIT — see [LICENSE](LICENSE). Third-party inventory: `KNOWLEDGE/THIRD_PARTY.md`.
+MIT — see [LICENSE](LICENSE). Third-party inventory:
+[KNOWLEDGE/THIRD_PARTY.md](KNOWLEDGE/THIRD_PARTY.md).
