@@ -1,14 +1,14 @@
 {
-  "op_id": "scope-696914899ba74dbaad1be91eb5cc1828",
+  "op_id": "scope-81de6e07201b497995bf5d510a57ff3d",
   "paths": {
-    "README.md": "b22aa3f1462e6536",
+    "README.md": "0535339697f8051e",
     "RELEASE_NOTES.md": "899d14b38826e9f2"
   },
   "project_identity": "v:\\___vac\\__k\\__code\\_ai_stuff_agentic\\_saiwork2",
   "project_lineage": "lineage-8215a382a4584c44b0f332a13c9ba03f",
-  "recorded_at": "2026-08-24T19:00:02Z",
+  "recorded_at": "2026-08-24T19:03:46Z",
   "schema_version": 1,
-  "source_head": "c10f2d27c4b9040ed41f0940371d2d4fe8dcfdcb",
-  "source_tree_fingerprint": "git-delta-v1:62d0bb989e2c1e60d2bbbb49349807aaf85f87e6b6b7eeb2a887db97572adcbd",
+  "source_head": "a1d79f52b543598818aded9a592d9f95ae96f80a",
+  "source_tree_fingerprint": "git-delta-v1:836f881b716755c68318d7561e56e194d14aa2fc997fbbbf10b93349655ef17e",
   "ticket": "T-112"
 }

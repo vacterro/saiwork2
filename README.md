@@ -81,17 +81,15 @@ npm run tauri build
 
 ## Architecture
 
-```mermaid
-flowchart LR
-    UI[React / TypeScript UI] --> Core[Rust orchestration core]
-    Core --> Queue[SQLite durable queue]
-    Core --> Process[Process supervisor]
-    Core --> Storage[Workspace and session metadata]
-    Core --> Saipen[SAIPEN read / watch / actions]
-    Core --> Engines[Engine adapters]
-    Engines --> OpenCode[OpenCode]
-    Engines --> CLI[Generic CLI]
-    Engines --> Harness[DeepSeek Harness]
+```text
+React / TypeScript UI
+          │ commands + events
+          ▼
+Rust orchestration core
+ ├─ SQLite durable queue
+ ├─ Process supervisor ── Engine adapters
+ ├─ Workspace + session metadata
+ └─ SAIPEN read / watch / actions
 ```
 
 The boundaries are deliberate: one process owner, one durable queue owner, one
