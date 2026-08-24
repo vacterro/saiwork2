@@ -1,0 +1,51 @@
+# --- Build artifacts ---
+target/
+dist/
+build/
+node_modules/
+*.tsbuildinfo
+
+# --- Local runtime data (portable mode) ---
+data/
+*.db
+*.db-shm
+*.db-wal
+
+# --- Donor audit clones (baselines recorded in KNOWLEDGE/THIRD_PARTY.md) ---
+donors/
+
+# --- Editor / OS ---
+.idea/
+.vscode/
+*.swp
+.DS_Store
+Thumbs.db
+/nul
+
+# --- Local tools and agent runtime state ---
+/_vtmp/
+/.vitest-tmp/
+/.codenomad/
+/.freebuff/
+/.workbuddy-ai/
+.pytest_cache/
+.ruff_cache/
+__pycache__/
+*.py[cod]
+
+# SAIPEN canonical state is shared; machine-local journals and locks are not.
+/.saipen/recovery/
+/.saipen/locks/
+/.saipen/cache/
+/.saipen/extensions/subs/*/kitchen/wiki/
+/saipen_export_*.tar.gz
+/saipen_export_*.zip
+
+# --- Logs ---
+*.log
+logs/
+
+# --- Env / secrets ---
+.env
+.env.*
+!.env.example
