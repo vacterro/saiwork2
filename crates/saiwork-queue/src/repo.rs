@@ -217,6 +217,11 @@ pub struct RepoFailpoints {
     /// When set, `get(id)` returns a storage error for ids the predicate
     /// matches — simulates a transient durability failure.
     pub get_error: Option<Arc<dyn Fn(&str) -> bool + Send + Sync>>,
+    /// Inject a typed `cancel_queued` error before mutation. Tests use both a
+    /// durability failure and a transient CAS conflict so callers must route
+    /// them differently instead of collapsing every error into one branch.
+    pub cancel_queued_error:
+        Option<Arc<dyn Fn(&str) -> Option<QueueError> + Send + Sync>>,
     /// When set and the predicate matches, `persist_session_created` returns
     /// a storage error AFTER the external session was authoritatively
     /// created — simulates a cross-authority durability failure (TASK 24 §9).
@@ -938,6 +943,18 @@ pub fn current_run(&self, id: &str) -> Result<Option<(String, Option<String>)>, 
 
     /// Cancel a QUEUED item: terminal CANCELLED with revision guard (§45).
     pub fn cancel_queued(&self, id: &str, expected_revision: i64) -> Result<bool, QueueError> {
+        #[cfg(feature = "failpoints")]
+        {
+            let f = self
+                .failpoints
+                .lock()
+                .expect("repo failpoints mutex poisoned");
+            if let Some(pred) = &f.cancel_queued_error {
+                if let Some(error) = pred(id) {
+                    return Err(error);
+                }
+            }
+        }
         let changed = self.db.with_conn(|conn| {
             conn.execute(
                 "UPDATE queue_items

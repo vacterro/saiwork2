@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.7 — 2026-08-24
+
+### Fail-closed queued cancellation
+- Queued cancellations now propagate storage failures immediately instead of entering an unbounded synchronous retry loop.
+- Typed compare-and-swap races still re-read authoritative queue state; hostile regressions cover both paths.
+
 ## 0.1.6 — 2026-08-24
 
 ### Bounded queue dispatch scans

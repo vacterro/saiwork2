@@ -481,6 +481,65 @@ async fn cancel_dispatched_durability_failure_is_fail_closed_and_never_invokes_a
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn cancel_queued_durability_failure_returns_error_without_retrying() {
+    let h = Harness::new().await;
+    let (m, _) = h.manager(None, None);
+    m.pause().unwrap();
+    let item = h.enqueue(&m, "keep durable", None);
+    let calls = Arc::new(AtomicUsize::new(0));
+    let calls_for_hook = calls.clone();
+    m.set_repo_failpoints_for_test(RepoFailpoints {
+        cancel_queued_error: Some(Arc::new(move |_| {
+            (calls_for_hook.fetch_add(1, Ordering::SeqCst) == 0).then(|| {
+                QueueError::StorageUnavailable(
+                    "injected queued-cancel durability failure (test)".into(),
+                )
+            })
+        })),
+        ..Default::default()
+    });
+
+    let err = m.cancel(&item.id).await.unwrap_err();
+    assert!(
+        matches!(err, QueueError::StorageUnavailable(_)),
+        "durability failure must surface, got {err:?}"
+    );
+    assert_eq!(
+        calls.load(Ordering::SeqCst),
+        1,
+        "a storage error is terminal for this mutation, never a retry signal"
+    );
+    assert_eq!(h.state(&item.id), QueueState::Queued);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn cancel_queued_cas_conflict_rereads_and_routes_current_state() {
+    let h = Harness::new().await;
+    let (m, _) = h.manager(None, None);
+    m.pause().unwrap();
+    let item = h.enqueue(&m, "cancel after race", None);
+    let calls = Arc::new(AtomicUsize::new(0));
+    let calls_for_hook = calls.clone();
+    let item_id = item.id.clone();
+    m.set_repo_failpoints_for_test(RepoFailpoints {
+        cancel_queued_error: Some(Arc::new(move |_| {
+            (calls_for_hook.fetch_add(1, Ordering::SeqCst) == 0).then(|| {
+                QueueError::Conflict {
+                    item_id: item_id.clone(),
+                    current: 2,
+                    expected: 1,
+                }
+            })
+        })),
+        ..Default::default()
+    });
+
+    m.cancel(&item.id).await.unwrap();
+    assert_eq!(calls.load(Ordering::SeqCst), 2);
+    assert_eq!(h.state(&item.id), QueueState::Cancelled);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn cancel_of_already_terminal_does_not_invoke_adapter() {
     let h = Harness::new().await;
     let (m, port) = h.manager(None, None);

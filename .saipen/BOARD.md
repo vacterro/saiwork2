@@ -27,8 +27,11 @@
      write that field name next to a concrete id anywhere in this file. -->
 
 ## DOING
+- [/] T-113 [P1] HUNT S4: queue cancel_queued storage errors are folded into retry and can spin synchronously without bound; distinguish CAS miss from repository failure and fail closed | verify: cargo test -p saiwork-queue --features failpoints | owner: codex | claim_time: 2026-08-24T20:27:37Z
 
 ## TODO
+- [ ] T-114 [P1] HUNT S4: queue handoff cancellation discards EnginePort cancel and cancel_from_intent persistence failures, allowing a live run or durable non-terminal row after reported success; surface warning or error and preserve honest state | verify: cargo test -p saiwork-queue --features failpoints
+- [ ] T-115 [P1] HUNT S4: Generic CLI failed prompt delivery discards both supervisor stop results and drops process authority before exit proof; retain cleanup authority and report teardown failure with OutcomeUnknown | verify: cargo test -p engine-generic-cli
 
 <!-- AUDIT RUN acb-mt632nqg 23.08.26: three waves (CORE / SECOND WAVE / PERFORMANCE), 23 tickets, T-084..T-106, handoff IMPLEMENTATION_AGENT. Priority order below = pick order. -->
 - [ ] T-095 [AUDIT-PERF-002] P1 bounded active queue snapshot page + aggregate counts, Dock badge from backend counts | verify: cargo test -p saiwork-queue + vitest
@@ -36,6 +39,8 @@
 - [ ] T-097 [AUDIT-PERF-004] P1 SSE parser: byte-slice field match, single owned data buffer, mem::take dispatch | verify: cargo test -p engine-opencode
 - [ ] T-098 [AUDIT-PERF-005] P1 tool-state normalization from borrowed Value, cap before owning Strings | verify: cargo test -p engine-opencode
 - [ ] T-099 [AUDIT-PERF-006] P1 append-aware StreamingText renderer (DOM writes proportional to new suffix) | verify: vitest
+- [ ] T-116 [P2] HUNT S4: clearWorkspaceSelection drops setActiveWorkspace rejection after clearing local projection, so restart can resurrect the closed project; restore or surface durable-clear failure deterministically | verify: npm test -- --run workspaceSelection && npm run typecheck
+- [ ] T-117 [P2] HUNT S4: EngineRegistry stop_all logs adapter stop and join failures but returns no evidence, so App shutdown can report clean despite failed engine cleanup; aggregate failures into ShutdownReport | verify: cargo test -p saiwork-core
 - [ ] T-109 [P2] HUNT S5: generic get_setting Tauri IPC reads arbitrary app_settings keys while set_setting is restricted to ui.layout.v1/ui.engine.v1; apply the same explicit read allowlist so typed-owner keys such as core.active_workspace and saipen.trusted_home are not exposed by default | verify: cargo test -p saiwork2 plus npm run typecheck
 - [ ] T-100 [AUDIT-CORE-006] P2 preset import atomic: validate-all then single storage transaction | verify: cargo test -p saiwork-core
 - [ ] T-101 [AUDIT-CORE-007] P2 bounded preset read at Tauri boundary (limit+1 sentinel) | verify: cargo test -p saiwork2

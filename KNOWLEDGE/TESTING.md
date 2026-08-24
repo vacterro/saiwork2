@@ -242,18 +242,21 @@ under flood, idle CPU ≈ 0, no listener/watcher multiplication.
 
 ## Queue suites (TASK 13, `saiwork-queue`)
 
-- `cargo test -p saiwork-queue` — 17 repo tests (no feature): enqueue /
+- `cargo test -p saiwork-queue` — 28 repo tests (no feature): enqueue /
   restart persistence, concurrent claim (exactly one winner), revision CAS
   edit/reorder/delete, reorder persistence, pause persistence,
   edit-after-claim rejection, ambiguous-handoff recovery, dispatched
-  reconciliation stays, cancel intent, size bounds.
-- `cargo test -p saiwork-queue --features failpoints` — 19 manager
+  reconciliation stays, cancel intent, size bounds, bounded snapshots and
+  keyset-paged dispatch scans.
+- `cargo test -p saiwork-queue --features failpoints` — 45 manager
   integration tests with FakeEngine: one → DONE, ordering, failure,
   hang + head-of-line block, cancel, engine-unavailable waits then proceeds,
   double-dispatch hostile, crash-matrix (prepare → requeued; sending →
   ambiguous; post-acceptance → ambiguous), stale-run-event isolation,
-  lost-wakeup, session-busy arbitration, retry-after-failure, shutdown
-  drain. Run serialized; race repeats are part of the Phase 1 gate.
+  lost-wakeup, session-busy arbitration, retry-after-failure, shutdown drain,
+  queue-cancel durability errors returning immediately without retry/spin,
+  while typed CAS races re-read and route the current durable state.
+  Run serialized; race repeats are part of the Phase 1 gate.
 
 ## SAIPEN read suites (TASK 14, `saiwork-saipen`)
 

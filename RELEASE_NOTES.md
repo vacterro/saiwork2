@@ -1,11 +1,13 @@
-# SAIWORK2 v0.1.6
+# SAIWORK2 v0.1.7
 
-First public source release of the durable desktop control plane for coding
-agents. Windows 10/11 is the primary platform; the application uses Tauri 2,
-a Rust core, and a React/TypeScript frontend.
+Patch release of the durable desktop control plane for coding agents. Windows
+10/11 is the primary platform; the application uses Tauri 2, a Rust core, and
+a React/TypeScript frontend.
 
 ## Highlights
 
+- Queued cancellation now fails closed on storage errors while preserving safe
+  compare-and-swap race recovery.
 - OpenCode sessions with model selection, streaming responses, tool activity,
   permission handling, cancellation, and history restoration.
 - Automatic engine startup when a project is selected and automatic session

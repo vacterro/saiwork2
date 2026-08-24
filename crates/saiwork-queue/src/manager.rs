@@ -342,15 +342,20 @@ impl QueueManager {
             match item.state {
                 QueueState::Queued => {
                     // The dispatcher may claim the item between our read and
-                    // the CAS: then the intent path below owns it. Any CAS
-                    // failure just re-reads and re-routes by current state.
+                    // the CAS: then the intent path below owns it. A clean
+                    // CAS miss re-reads and re-routes; storage failure is not
+                    // a retry signal and must surface immediately.
                     match self.repo.cancel_queued(&current_id, item.revision) {
                         Ok(true) => {
                             self.publish_changed(&current_id, QueueState::Cancelled);
                             self.wake.notify_one();
                             return Ok(());
                         }
-                        _ => continue,
+                        Ok(false) => continue,
+                        Err(QueueError::Conflict { .. } | QueueError::InvalidState { .. }) => {
+                            continue
+                        }
+                        Err(error) => return Err(error),
                     }
                 }
                 QueueState::Leased => {
