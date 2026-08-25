@@ -158,7 +158,8 @@ export const commands = {
    * (TASK 24 §9). */
   activeRuns: () => invoke<[string, string][]>("active_runs"),
   // ---- Queue (TASK 13) ----
-  queueSnapshot: () => invoke<QueueSnapshot>("queue_snapshot"),
+  queueSnapshot: (activeOffset = 0) =>
+    invoke<QueueSnapshot>("queue_snapshot", { activeOffset }),
   /** Full durable item (exact payload) for editing/inspecting ONE row — the
    * snapshot carries only bounded payload previews (TASK 24 perf). */
   queueGetItem: (itemId: string) => invoke<QueueItem>("queue_get_item", { itemId }),
@@ -183,6 +184,9 @@ export const commands = {
   queueResume: () => invoke<void>("queue_resume"),
   queueRetry: (itemId: string, expectedRevision: number) =>
     invoke<void>("queue_retry", { itemId, expectedRevision }),
+  /** Permanently remove terminal queue history only. Active and UNKNOWN rows
+   * are protected by the backend predicate and cannot be purged here. */
+  queuePurgeTerminal: () => invoke<number>("queue_purge_terminal"),
   // ---- Files (Phase C, read-only) ----
   filesListDir: (workspaceId: string, rel: string) =>
     invoke<DirListing>("files_list_dir", { workspaceId, rel }),

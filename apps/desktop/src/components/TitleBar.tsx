@@ -3,6 +3,7 @@ import type { ModelInfo } from "@saiwork2/contracts";
 import type { SliceProps } from "../state/slices";
 import { commands } from "../app/backend";
 import { useSingleFlight } from "../app/singleFlight";
+import { requestEngineAutoStart } from "../app/engineAutoStart";
 import { selectEngine, selectModel } from "../app/modelCatalog";
 import { ModelPicker } from "./ModelPicker";
 import { mutationsAllowed } from "../app/eligibility";
@@ -56,7 +57,13 @@ export function TitleBar({ state, onError }: Props) {
       // selection change while awaiting does not clear another engine's flag.
       markEngineStarting(id, true);
       try {
-        await commands.startEngine(id, state.currentWorkspaceId);
+        // AUDIT-W2-005: manual Start routes through the SAME latest-intent
+        // activation owner as workspace/engine selection — two competing
+        // lifecycle owners let a normal Start(A)→select(B) race end bound to
+        // A while selected on B. The owner serializes, never races an
+        // in-flight start with a second start command, and re-binds after a
+        // foreign start settles.
+        await requestEngineAutoStart(id, state.currentWorkspaceId, onError);
         // Authoritative pull after the invoke resolves: if the event stream
         // is alive this is an idempotent no-op; if it is not, the UI is still
         // correct without a manual reload.

@@ -1413,6 +1413,7 @@ impl EngineAdapter for OpenCodeAdapter {
         let run = Arc::new(RunRecord {
             run_id: RunId::new(format!("run-{}", Uuid::new_v4())),
             session_id: session_id.clone(),
+            model: req.model.clone(),
             engine_session_id: engine_session_id.clone(),
             generation,
             cancel_requested: AtomicBool::new(false),

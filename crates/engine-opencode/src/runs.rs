@@ -29,6 +29,8 @@ pub(crate) struct RunRecord {
     pub run_id: RunId,
     /// Generic SAIWORK2 session id — used in every canonical event.
     pub session_id: String,
+    /// Canonical requested model; None means the OpenCode runtime default.
+    pub model: Option<String>,
     /// Upstream OpenCode session id — used for the actual server calls
     /// (message POST, abort, permission reply) and wire event routing
     /// (TASK 24 §9: generic and upstream ids differ).

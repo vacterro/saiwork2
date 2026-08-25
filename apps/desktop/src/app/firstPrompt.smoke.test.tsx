@@ -320,11 +320,28 @@ function installFakeBackend(): void {
     emit("queue.changed", { item_id: item.id, state: "done" });
     return item;
   });
-  vi.spyOn(commands, "queueSnapshot").mockImplementation(async (): Promise<QueueSnapshot> => ({
-    status: "ready",
-    paused: false,
-    items: fake.queue,
-  }));
+  vi.spyOn(commands, "queueSnapshot").mockImplementation(async (): Promise<QueueSnapshot> => {
+    const counts = {
+      queued: 0,
+      leased: 0,
+      dispatched: 0,
+      done: 0,
+      failed: 0,
+      cancelled: 0,
+      unknown: 0,
+    };
+    for (const i of fake.queue) counts[i.state as keyof typeof counts] += 1;
+    return {
+      status: "ready",
+      paused: false,
+      items: fake.queue,
+      counts,
+      active_offset: 0,
+      active_limit: 100,
+      queued_before: 0,
+      active_has_more: false,
+    };
+  });
   vi.spyOn(commands, "getSaipen").mockImplementation(async () => null);
   vi.spyOn(commands, "activeRuns").mockImplementation(async (): Promise<[string, string][]> =>
     fake.activeRuns(),

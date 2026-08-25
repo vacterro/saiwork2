@@ -62,6 +62,42 @@ pub struct RequestHandle {
     method: String,
     timeout: Duration,
     rx: Option<oneshot::Receiver<Result<Value, HarnessError>>>,
+    /// AUDIT-CORE-005: RAII owner of the pending entry. Held from successful
+    /// registration until response/timeout/death settles it; a dropped
+    /// handle — or an aborted `await_response` future — drops the guard and
+    /// with it the exact pending id. Cancellation at ANY suspension point
+    /// can no longer strand an entry.
+    guard: Option<PendingGuard>,
+}
+
+/// AUDIT-CORE-005: owns one `pending` entry. Drop removes that exact id
+/// unless the authoritative removers (reader response, timeout, death,
+/// explicit settle) already did — removal of a settled/absent id is an
+/// idempotent no-op by construction.
+struct PendingGuard {
+    inner: Arc<Inner>,
+    id: u64,
+    settled: bool,
+}
+
+impl PendingGuard {
+    /// Mark settled: the entry was removed by its authoritative remover, so
+    /// the drop path must not touch the map again.
+    fn settle(&mut self) {
+        self.settled = true;
+    }
+}
+
+impl Drop for PendingGuard {
+    fn drop(&mut self) {
+        if !self.settled {
+            self.inner
+                .pending
+                .lock()
+                .expect("pending mutex poisoned")
+                .remove(&self.id);
+        }
+    }
 }
 
 /// Bounded capacity of the routed `session/update` and server-request
@@ -287,13 +323,17 @@ impl Transport {
                 },
             );
         }
+        // AUDIT-CORE-005: the entry is guard-owned from this instant. If the
+        // future is cancelled while suspended in `write_frame`, the local
+        // guard drops and removes the exact id — no orphan registration.
+        let mut guard = PendingGuard {
+            inner: inner.clone(),
+            id,
+            settled: false,
+        };
         let frame = Request::new(id, method, Some(params));
         if let Err(reason) = write_frame(inner, &frame).await {
-            inner
-                .pending
-                .lock()
-                .expect("pending mutex poisoned")
-                .remove(&id);
+            drop(guard); // removes the pending entry (explicit for clarity)
             return Err(HarnessError::TransportClosed(reason));
         }
         Ok(RequestHandle {
@@ -302,6 +342,7 @@ impl Transport {
             method: method.to_string(),
             timeout,
             rx: Some(rx),
+            guard: Some(guard),
         })
     }
 
@@ -350,18 +391,27 @@ impl RequestHandle {
     /// order; a response already received for our id resolves the request
     /// even if a later malformed frame kills the transport). The pending
     /// entry is removed on response, timeout, or death — never leaked.
+    ///
+    /// AUDIT-CORE-005: the guard is TAKEN out of `self` for the wait. If this
+    /// future is dropped mid-await (caller cancellation), the guard drops and
+    /// removes the pending id — the entry can never outlive its handle.
     pub async fn await_response(mut self) -> Result<Value, HarnessError> {
         let rx = self.rx.take().expect("await_response called once");
+        // Take the guard so it is owned by THIS future: cancelling the future
+        // drops the guard and cleans the entry (cancellation safety).
+        let mut guard = self.guard.take().expect("guard present until awaited");
         let mut dead_rx = self.inner.dead_rx.clone();
         let id = self.id;
-        tokio::select! {
+        let outcome = tokio::select! {
             biased;
             r = rx => match r {
+                // Reader-side removal is authoritative for the response path.
                 Ok(Ok(value)) => Ok(value),
                 Ok(Err(e)) => Err(e),
                 Err(_) => Err(HarnessError::TransportClosed("sender dropped".into())),
             },
             _ = tokio::time::sleep(self.timeout) => {
+                // No response will ever come: this waiter IS the remover.
                 self.inner.pending.lock().expect("pending mutex poisoned").remove(&id);
                 Err(HarnessError::RequestTimeout { method: self.method.clone(), timeout: self.timeout })
             }
@@ -370,7 +420,12 @@ impl RequestHandle {
                 self.inner.pending.lock().expect("pending mutex poisoned").remove(&id);
                 Err(HarnessError::RuntimeLost(reason))
             }
-        }
+        };
+        // Every settled path hands cleanup to the authoritative remover
+        // (reader response / timeout branch removed above / death sweep);
+        // the drop then becomes an idempotent no-op.
+        guard.settle();
+        outcome
     }
 }
 
@@ -700,5 +755,104 @@ mod tests {
         // No stray routed frames after close.
         let _ = stream_rx.try_recv();
         let _ = tool_rx.try_recv();
+    }
+}
+
+/// AUDIT-CORE-005: pending-request ownership is RAII — cancellation at either
+/// async suspension boundary (frame write, response wait) can never strand a
+/// registration in the bounded pending map.
+#[cfg(test)]
+mod pending_owner_tests {
+    use super::*;
+    use saiwork_events::EventBus;
+    use saiwork_process::{ProcessSpec, ProcessSupervisor, StdinPolicy};
+
+    /// A live child that NEVER reads stdin and writes nothing to the
+    /// protocol stream: writes beyond the OS pipe buffer block forever and
+    /// responses never come — deterministic suspension points.
+    async fn silent_blocking_transport() -> (
+        Transport,
+        std::sync::Arc<saiwork_process::ManagedProcess>,
+        mpsc::Sender<Vec<u8>>,
+    ) {
+        let bus = EventBus::new();
+        let supervisor = ProcessSupervisor::new(bus);
+        let tmp = tempfile::tempdir().unwrap();
+        let mut spec = ProcessSpec::new("pending-owner-test", "powershell");
+        spec.args = vec![
+            "-NoProfile".into(),
+            "-Command".into(),
+            "Start-Sleep -Seconds 120".into(),
+        ];
+        spec.cwd = Some(tmp.path().to_path_buf());
+        spec.stdin = StdinPolicy::Piped;
+        let process = supervisor.spawn(spec).await.expect("spawn blocking child");
+        // The SENDER must outlive the transport: dropping it is protocol EOF
+        // and would kill the transport under test.
+        let (protocol_tx, protocol_rx) = mpsc::channel(4096);
+        let (transport, _dead, _stream_rx, _tool_rx, _server_rx) =
+            Transport::new(1, process.clone(), protocol_rx, 1024 * 1024);
+        (transport, process, protocol_tx)
+    }
+
+    #[tokio::test]
+    async fn aborted_request_start_leaves_no_pending_entry() {
+        let (transport, _process, _keepalive_tx) = silent_blocking_transport().await;
+        // Oversized params: write_frame suspends once the OS pipe buffer is
+        // full and cannot complete while the child never reads.
+        let params = Value::String("x".repeat(512 * 1024));
+        let task = tokio::spawn({
+            let transport = transport.clone();
+            async move { transport.request_start("ping", params, Duration::from_secs(30)).await }
+        });
+        // Deterministic wait: the registration exists exactly while the
+        // future is suspended inside the blocked write.
+        let mut registered = false;
+        for _ in 0..300 {
+            if transport.pending_count() == 1 {
+                registered = true;
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert!(registered, "request_start must register before its write completes");
+        task.abort();
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        assert_eq!(
+            transport.pending_count(),
+            0,
+            "aborting request_start mid-write must drop the RAII guard and remove the entry"
+        );
+    }
+
+    #[tokio::test]
+    async fn dropped_handle_and_aborted_wait_leave_no_pending_entry() {
+        let (transport, _process, _keepalive_tx) = silent_blocking_transport().await;
+        // Small frame: fits the OS pipe buffer, request_start completes.
+        let handle = transport
+            .request_start("ping", json!({"small": true}), Duration::from_secs(30))
+            .await
+            .expect("start succeeds");
+        assert_eq!(transport.pending_count(), 1);
+        drop(handle); // never awaited: guard must clean up
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        assert_eq!(transport.pending_count(), 0, "dropped handle removes its entry");
+
+        // Same guarantee when the RESPONSE WAIT is aborted.
+        let handle2 = transport
+            .request_start("ping", json!({"small": true}), Duration::from_secs(30))
+            .await
+            .unwrap();
+        assert!(transport.is_dead().is_none(), "transport must stay alive for this test");
+        let task = tokio::spawn(async move { handle2.await_response().await });
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert_eq!(transport.pending_count(), 1);
+        task.abort(); // cancel suspended in await_response's select
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        assert_eq!(
+            transport.pending_count(),
+            0,
+            "aborted await_response removes its entry"
+        );
     }
 }

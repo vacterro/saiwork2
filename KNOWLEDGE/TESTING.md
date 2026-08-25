@@ -30,6 +30,11 @@ deterministic in-repo fixture binary (`proc_fixture`, located via
 test spawns a parent that spawns a sleeping child, force-kills the parent's
 tree, and asserts the descendant PID is gone (0-orphan gate foundation).
 
+`saiwork-core` also pins the layer above ProcessSupervisor: a hostile engine
+adapter whose `stop()` future never returns is cut off by the registry-level
+deadline, produces named failure evidence in `ShutdownReport`, and cannot
+prevent the final supervisor force sweep or `STOPPED`.
+
 ### 2b. FakeEngine contract suite (TASK 07, `cargo test -p engine-fake`, 39 tests)
 
 Deterministic in-process engine (ADR-009/017) with a small harness

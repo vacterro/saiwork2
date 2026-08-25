@@ -92,6 +92,16 @@ afterEach(() => {
 });
 
 describe("stream batching (ONE window, §22–§23 + TASK 24 perf)", () => {
+  it("binds the canonical requested model to the answer run", () => {
+    dispatch("message.started", {
+      session_id: "s1",
+      run_id: "r-model",
+      engine_id: "fake",
+      model: "openai/gpt-5.6",
+    });
+    expect(store.getState().activeMessage.s1?.model).toBe("openai/gpt-5.6");
+  });
+
   it("applies each shell-coalesced delta immediately — one mutation per bridge batch", () => {
     // The shell transport (`saiwork_events::coalescing`) already merges N
     // raw tokens into one delta per (session, run) per frame; the Store must
@@ -118,6 +128,29 @@ describe("stream batching (ONE window, §22–§23 + TASK 24 perf)", () => {
     const msg = state.messages.s1?.[0];
     expect(msg?.text).toBe("tail chunk");
     expect(msg?.status).toBe("complete");
+  });
+
+  it("activeMessage stays SPARSE through many completed runs (AUDIT-PERF-002)", () => {
+    // 300 create/start/stream/terminal cycles WITHOUT closing sessions: the
+    // old implementation left a null tombstone per completed run, making the
+    // hot delta path copy history proportional keys. The sparse map must end
+    // with ZERO keys and hold exactly ONE key while streaming.
+    for (let i = 0; i < 300; i++) {
+      const sid = `s${i}`;
+      const rid = `r${i}`;
+      seedSession(sid); // scope guards require the session to be in-scope
+      dispatch("message.started", { session_id: sid, run_id: rid, engine_id: "fake" });
+      store.dispatch(parseEnvelope(msgDelta(sid, rid, "x", 1)));
+      // Exactly one live-tail key while streaming — never one-per-history.
+      expect(Object.keys(store.getState().activeMessage)).toEqual([sid]);
+      dispatch("message.completed", { session_id: sid, run_id: rid });
+      expect(store.getState().messages[sid]!.at(-1)!.text).toBe("x");
+    }
+    expect(Object.keys(store.getState().activeMessage)).toHaveLength(0);
+
+    // Duplicate terminal stays idempotent and does NOT resurrect a key.
+    dispatch("message.completed", { session_id: "s0", run_id: "r0" });
+    expect(Object.keys(store.getState().activeMessage)).toHaveLength(0);
   });
 
   it("fallback patching updates a non-tail run correctly (TASK 24 perf)", () => {
@@ -585,10 +618,11 @@ describe("authoritative history reconcile (TASK 24 §9)", () => {
     expect(st.activeMessage.s1?.id).toBe("r1-assistant");
     expect(st.messages.s1!.some((m) => m.id === "r1-assistant")).toBe(false);
 
-    // The terminal commits the tail exactly once.
+    // The terminal commits the tail exactly once; the sparse map DELETES the
+    // key (AUDIT-PERF-002: no null tombstone).
     dispatch("message.completed", { session_id: "s1", run_id: "r1" });
     const after = store.getState();
-    expect(after.activeMessage.s1).toBeNull();
+    expect("s1" in after.activeMessage).toBe(false);
     const committed = after.messages.s1!.filter((m) => m.id === "r1-assistant");
     expect(committed).toHaveLength(1);
     expect(committed[0]!.status).toBe("complete");

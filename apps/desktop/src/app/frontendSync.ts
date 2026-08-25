@@ -260,7 +260,7 @@ function installLagGapRecovery(): void {
         // W2-003: only drop the locally-observed tail if the authoritative
         // history reload actually succeeds (status "available"). With no
         // history authority the live tail is all the user has — keep it.
-        const hadTail = store.getState().activeMessage[sid] !== undefined;
+        const hadTail = store.getState().activeMessage[sid] != null;
         void loadSessionHistory(sid)
           .then(() => {
             if (hadTail && store.getState().historyStatus[sid] === "available") {
@@ -322,6 +322,11 @@ export async function reconcileFrontend(reason?: "lag"): Promise<void> {
   try {
     const epoch = currentSelectionEpoch();
     const workspaceId = store.getState().currentWorkspaceId;
+    // AUDIT-W2-004: capture the per-domain event watermarks BEFORE issuing
+    // reads. A domain whose watermark advanced while its read was in flight
+    // has newer truth than this read can ever return — that domain's result
+    // is discarded and ONE bounded dirty follow-up re-reads it.
+    const seqBefore = { ...store.getState().reconcileSeq };
 
     const [info, engines, sessions, activeRuns, saipenSnap] = await Promise.all([
       commands.appInfo().catch(() => undefined),
@@ -335,6 +340,21 @@ export async function reconcileFrontend(reason?: "lag"): Promise<void> {
 
     // The queue projection has its own owner (single-flight + dirty follow-up).
     requestQueueSnapshot();
+
+    // Per-domain freshness: did a relevant event land during the reads?
+    const seqAfter = store.getState().reconcileSeq;
+    const fresh = {
+      engines: seqBefore.engines === seqAfter.engines,
+      sessions: seqBefore.sessions === seqAfter.sessions,
+      runs: seqBefore.runs === seqAfter.runs,
+    };
+    if (!fresh.engines || !fresh.sessions || !fresh.runs) {
+      // Exactly one bounded follow-up through the single-flight scheduler —
+      // never an unbounded reconcile loop (a follow-up pass recaptures fresh
+      // watermarks; if events keep racing it, each pass still commits every
+      // domain that stayed quiet).
+      reconcileDirty = true;
+    }
 
     // Captured so the active-session transition is routed through the single
     // owner AFTER the patch (T-046) — never set inline here.
@@ -350,8 +370,8 @@ export async function reconcileFrontend(reason?: "lag"): Promise<void> {
       if (info) {
         next = { ...next, backend: "connected", lifecycle: info.lifecycle, version: info.version };
       }
-      if (engines) next = { ...next, engines };
-      if (scopedValid && sessions) {
+      if (engines && fresh.engines) next = { ...next, engines };
+      if (scopedValid && sessions && fresh.sessions) {
         const activeSessionId =
           next.activeSessionId && sessions.some((x) => x.id === next.activeSessionId)
             ? next.activeSessionId
@@ -363,14 +383,18 @@ export async function reconcileFrontend(reason?: "lag"): Promise<void> {
         nextActiveSessionId = activeSessionId;
         applyActiveSession = true;
       }
-      if (activeRuns) {
+      if (activeRuns && fresh.runs) {
         // Exact ownership rebuild from the authority: every known session is
         // reset, then only really-owned runs are set.
         const running: Record<string, string | null> = { ...next.running };
         for (const session of next.sessions) running[session.id] = null;
         for (const [sid, rid] of activeRuns) running[sid] = rid;
         next = { ...next, running, runningStale: false };
-      } else {
+      } else if (activeRuns && !fresh.runs) {
+        // AUDIT-W2-004: a NEWER run fact than this read — preserve current
+        // ownership (never fabricate idle over message.started).
+        next = { ...next, runningStale: true };
+      } else if (!activeRuns) {
         // Preserve uncertainty (never fabricate idle).
         next = { ...next, runningStale: true };
       }
@@ -450,7 +474,7 @@ async function reconcileAfterLag(): Promise<void> {
     // a real (possibly partial) turn and leave a blank thread. The in-flight
     // tail is only cleared once an authoritative baseline has superseded it.
     const hadTail =
-      store.getState().activeMessage[sid] !== undefined ||
+      store.getState().activeMessage[sid] != null ||
       store.getState().streamGaps[sid] === true;
     await loadSessionHistory(sid).catch(() => undefined);
     if (hadTail && store.getState().historyStatus[sid] === "available") {

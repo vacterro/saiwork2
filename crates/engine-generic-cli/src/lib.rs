@@ -491,6 +491,7 @@ impl EngineAdapter for GenericCliEngine {
             .clone()
             .ok_or_else(|| EngineError::engine(ENGINE_ID, "engine not started"))?;
         let session_id = req.session_id.clone();
+        let model = req.model.clone();
         let run_scope = run_id.clone();
         let timeout = self.config.timeout;
         let runs = self.runs.clone();
@@ -503,6 +504,7 @@ impl EngineAdapter for GenericCliEngine {
             bus.publish(Event::MessageStarted {
                 session_id: session_id.clone().into(),
                 run_id: run_scope.clone().into(),
+                model,
             });
 
             // A terminal (and the run-removal that releases the workspace)

@@ -34,6 +34,12 @@ pub const LAST_ERROR_MAX_CHARS: usize = 500;
 /// the snapshot carries at most this many payload bytes per item; the full
 /// payload is fetched on demand only when editing/inspecting the item.
 pub const PAYLOAD_PREVIEW_BYTES: usize = 512;
+/// Maximum number of non-terminal rows carried by one UI snapshot page.
+/// Paging is backend-owned: a large durable queue must never become one
+/// unbounded SQLite -> Rust -> IPC -> React allocation.
+pub const SNAPSHOT_ACTIVE_PAGE_SIZE: usize = 100;
+/// Recent terminal rows carried alongside every active page.
+pub const SNAPSHOT_HISTORY_LIMIT: usize = 50;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -220,6 +226,55 @@ pub enum QueueStatus {
     Stopped,
 }
 
+/// Exact durable row totals, computed by the queue repository rather than
+/// inferred from the currently loaded UI page.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
+pub struct QueueCounts {
+    pub queued: usize,
+    pub leased: usize,
+    pub dispatched: usize,
+    pub done: usize,
+    pub failed: usize,
+    pub cancelled: usize,
+    pub unknown: usize,
+}
+
+impl QueueCounts {
+    pub fn active(self) -> usize {
+        self.queued + self.leased + self.dispatched + self.unknown
+    }
+
+    pub fn total(self) -> usize {
+        self.active() + self.done + self.failed + self.cancelled
+    }
+
+    pub(crate) fn from_state_counts(counts: &[(QueueState, usize); 7]) -> Self {
+        let mut out = Self::default();
+        for (state, count) in counts {
+            match state {
+                QueueState::Queued => out.queued = *count,
+                QueueState::Leased => out.leased = *count,
+                QueueState::Dispatched => out.dispatched = *count,
+                QueueState::Done => out.done = *count,
+                QueueState::Failed => out.failed = *count,
+                QueueState::Cancelled => out.cancelled = *count,
+                QueueState::Unknown => out.unknown = *count,
+            }
+        }
+        out
+    }
+}
+
+/// Repository-owned page before runtime status is attached by QueueManager.
+#[derive(Debug, Clone)]
+pub struct QueuePage {
+    pub items: Vec<QueueItem>,
+    pub counts: QueueCounts,
+    pub active_offset: usize,
+    pub queued_before: usize,
+    pub active_has_more: bool,
+}
+
 /// Authoritative snapshot for the UI (one truth, §69–§74). `payload_preview`
 /// is `true` when `items[].payload` is a bounded preview (TASK 24 perf): the
 /// full payload is fetched via the dedicated get-item operation before
@@ -229,6 +284,14 @@ pub struct QueueSnapshot {
     pub status: QueueStatus,
     pub paused: bool,
     pub items: Vec<QueueItem>,
+    pub counts: QueueCounts,
+    /// Normalized offset of the active page in deterministic queue order.
+    pub active_offset: usize,
+    pub active_limit: usize,
+    /// Number of QUEUED rows preceding this active page. Reorder uses this
+    /// backend fact to translate a page-local index into the global queue.
+    pub queued_before: usize,
+    pub active_has_more: bool,
     #[serde(default)]
     pub payload_preview: bool,
 }

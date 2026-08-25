@@ -40,6 +40,28 @@ export function pickSlice<K extends SliceKeys>(
   return out as Pick<AppState, K[number]>;
 }
 
+/** AUDIT-PERF-003: STABLE selector factory for `useAppSlice` — one projection
+ * per declared key tuple, hoisted to module scope by callers so the selector
+ * reference never changes across renders. */
+export function sliceSelect<K extends SliceKeys>(
+  keys: K,
+): (state: AppState) => Pick<AppState, K[number]> {
+  return (state) => pickSlice(state, keys);
+}
+
+/** Shallow equality over exactly the declared keys — the subscription-boundary
+ * counterpart of the comparator loop in `sliceEqual`. */
+export function pickEqual<K extends SliceKeys>(
+  keys: K,
+): (a: Pick<AppState, K[number]>, b: Pick<AppState, K[number]>) => boolean {
+  return (a, b) => {
+    for (const k of keys) {
+      if ((a as AppState)[k] !== (b as AppState)[k]) return false;
+    }
+    return true;
+  };
+}
+
 /**
  * Reference comparison over exactly the declared keys (+ the handler identity).
  * The store is immutable, so a reference change is a real data change.

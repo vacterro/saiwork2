@@ -123,7 +123,7 @@ process state.
 ```text
 send
   → run created (RunId allocated by the engine adapter)
-  → message.started
+  → message.started(model: canonical id | engine default)
   → message.delta*        (streaming; zero or more)
   → exactly one terminal: message.completed | message.failed | message.cancelled
 ```
@@ -138,6 +138,10 @@ send
 - Run failure ≠ engine failure ≠ session failure: a failed run leaves the
   engine healthy and the session open (tests in `engine-fake`); an engine
   crash resolves all active runs to a terminal failure/cancelled state.
+- `message.started.model` is the per-run attribution authority. It carries
+  the requested canonical model id, or `null` when the adapter deliberately
+  delegated selection to the engine default; the UI never guesses from a
+  later model-picker value.
 
 ## Same-session concurrency
 
@@ -174,6 +178,14 @@ session's engine) → Tauri `resolve_permission` command → frontend Allow/Deny
 buttons. The engine's `permission.resolved` event is the authoritative
 outcome; the UI never fabricates it. Engines declaring `permissions = false`
 never need the command.
+
+## Question flow
+
+OpenCode `question.asked` is normalized into a bounded structured card and
+resolved through the typed `QuestionResolution` boundary. The current server
+API is request-scoped, not session-scoped: `POST /question/{requestID}/reply`
+with `{ answers: string[][] }`, or `/reject`. Generic session identity is used
+to find the owning adapter/run; it is never inserted into the wire route.
 
 ## Forbidden
 

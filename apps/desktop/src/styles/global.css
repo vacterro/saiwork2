@@ -32,6 +32,15 @@
   --selection:#3D372A;
   --compareBack:#14120C;
   --link:#F0D060;
+
+  /* Semantic aliases may only resolve to the canonical UI.md palette. */
+  --accentGold:var(--link);
+  --surfaceLight:var(--bevelLight);
+  --surfaceDark:var(--borderDark);
+  --textTertiary:var(--textMuted);
+  --warningText:var(--link);
+  --mono:Verdana, sans-serif;
+  --serif:Verdana, sans-serif;
 }
 
 * {
@@ -119,6 +128,46 @@ textarea {
   color: var(--textPrimary);
 }
 
+/* UI.md Win95 scrollbars: square, opaque, palette-only. Chromium/Tauri
+   exposes these pseudo-elements; Firefox gets the matching two-color form. */
+* {
+  scrollbar-color: var(--surfaceRaised) var(--backgroundSoft);
+  scrollbar-width: auto;
+}
+
+*::-webkit-scrollbar {
+  width: 16px;
+  height: 16px;
+  background: var(--backgroundSoft);
+}
+
+*::-webkit-scrollbar-track,
+*::-webkit-scrollbar-corner {
+  background: var(--backgroundSoft);
+  border: 1px solid var(--borderDark);
+}
+
+*::-webkit-scrollbar-thumb {
+  min-width: 20px;
+  min-height: 20px;
+  background: var(--surfaceRaised);
+  border: 2px solid;
+  border-color: var(--bevelLight) var(--borderDark) var(--borderDark) var(--bevelLight);
+}
+
+*::-webkit-scrollbar-thumb:active {
+  background: var(--surface);
+  border-color: var(--borderDark) var(--bevelLight) var(--bevelLight) var(--borderDark);
+}
+
+*::-webkit-scrollbar-button {
+  width: 16px;
+  height: 16px;
+  background: var(--surfaceRaised);
+  border: 2px solid;
+  border-color: var(--bevelLight) var(--borderDark) var(--borderDark) var(--bevelLight);
+}
+
 a, a:link, a:visited {
   color: var(--link);
 }
@@ -164,7 +213,7 @@ a, a:link, a:visited {
 
 .titlebar .label {
   display: block;
-  font-size: 9px;
+  font-size: 10px;
   letter-spacing: 0.14em;
   color: var(--textMuted);
 }
@@ -211,9 +260,9 @@ a, a:link, a:visited {
 /* Model discovery failure (non-fatal): compact amber warning next to the
    selector; the selector stays usable with Engine Default (TASK 25 §22–§23). */
 .titlebar__model-warning {
-  font-size: 9px;
+  font-size: 10px;
   letter-spacing: 0.06em;
-  color: var(--warningText, #c9a227);
+  color: var(--warningText);
   max-width: 160px;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -244,7 +293,7 @@ a, a:link, a:visited {
   justify-content: space-between;
   align-items: center;
   padding: 6px 10px;
-  font-size: 9px;
+  font-size: 10px;
   letter-spacing: 0.14em;
   color: var(--textMuted);
   border-bottom: 1px solid var(--borderMuted);
@@ -263,18 +312,18 @@ a, a:link, a:visited {
 .sidebar__item {
   display: flex;
   align-items: center;
-  border-bottom: 1px solid color-mix(in srgb, var(--borderMuted) 55%, transparent);
+  border-bottom: 1px solid var(--borderMuted);
 }
 
 .sidebar__item--active {
-  background: color-mix(in srgb, var(--accentTeal) 12%, var(--backgroundSoft));
-  border-left: 2px solid var(--accentTeal);
+  background: var(--surfaceRaised);
+  border-left: 2px solid var(--link);
 }
 
 .sidebar__item-name {
   flex: 1;
   text-align: left;
-  background: none;
+  background: var(--surface);
   border: none;
   color: var(--textPrimary);
   padding: 7px 10px;
@@ -285,7 +334,7 @@ a, a:link, a:visited {
 }
 
 .sidebar__item-remove {
-  background: none;
+  background: var(--surface);
   border: none;
   color: var(--textMuted);
   cursor: pointer;
@@ -319,7 +368,7 @@ a, a:link, a:visited {
 }
 
 .context-menu__item {
-  background: none;
+  background: var(--surface);
   border: none;
   color: var(--textPrimary);
   padding: 6px 12px;
@@ -330,12 +379,12 @@ a, a:link, a:visited {
 }
 
 .context-menu__item:hover {
-  background: var(--accentTeal);
+  background: var(--link);
   color: var(--background);
 }
 
 .sidebar__item-title {
-  font-size: 13px;
+  font-size: 14px;
   display: flex;
   align-items: center;
   gap: 6px;
@@ -351,10 +400,10 @@ a, a:link, a:visited {
 }
 
 .sidebar__badge {
-  font-size: 9px;
-  border: 1px solid var(--accentTeal);
-  color: var(--accentTeal);
-  border-radius: 2px;
+  font-size: 10px;
+  border: 1px solid var(--link);
+  color: var(--link);
+  border-radius: 0px;
   padding: 0 3px;
   line-height: 1.3;
 }
@@ -370,9 +419,9 @@ a, a:link, a:visited {
 .sessions__item {
   width: 100%;
   text-align: left;
-  background: none;
+  background: var(--surface);
   border: none;
-  border-bottom: 1px solid color-mix(in srgb, var(--borderMuted) 55%, transparent);
+  border-bottom: 1px solid var(--borderMuted);
   color: var(--textPrimary);
   padding: 7px 10px;
   cursor: pointer;
@@ -384,7 +433,7 @@ a, a:link, a:visited {
 .sessions__row {
   display: flex;
   align-items: stretch;
-  border-bottom: 1px solid color-mix(in srgb, var(--borderMuted) 55%, transparent);
+  border-bottom: 1px solid var(--borderMuted);
 }
 
 .sessions__row .sessions__item {
@@ -400,8 +449,8 @@ a, a:link, a:visited {
 }
 
 .sessions__item--active {
-  background: color-mix(in srgb, var(--accentTeal) 12%, var(--backgroundSoft));
-  border-left: 2px solid var(--accentTeal);
+  background: var(--surfaceRaised);
+  border-left: 2px solid var(--link);
 }
 
 .sessions__item-title {
@@ -413,7 +462,7 @@ a, a:link, a:visited {
 
 .sessions__item-meta {
   font-family: var(--mono);
-  font-size: 9px;
+  font-size: 10px;
   color: var(--textMuted);
   overflow: hidden;
   text-overflow: ellipsis;
@@ -492,7 +541,7 @@ a, a:link, a:visited {
 }
 
 .msg--assistant {
-  border-left: 3px solid var(--accentTeal);
+  border-left: 3px solid var(--link);
   padding-left: 10px;
 }
 
@@ -518,7 +567,7 @@ a, a:link, a:visited {
   margin: 0;
   white-space: pre-wrap;
   word-break: break-word;
-  font-size: 13px;
+  font-size: 14px;
   line-height: 1.6;
 }
 
@@ -536,7 +585,7 @@ a, a:link, a:visited {
 
 .status--streaming,
 .status--running {
-  color: var(--accentTeal);
+  color: var(--link);
 }
 
 .status--complete,
@@ -557,7 +606,7 @@ a, a:link, a:visited {
 /* ---- Markdown (assistant terminal text) ---- */
 
 .md {
-  font-size: 13px;
+  font-size: 14px;
   line-height: 1.6;
 }
 
@@ -583,13 +632,13 @@ a, a:link, a:visited {
 }
 
 .md h1 {
-  font-size: 17px;
+  font-size: 16px;
   border-bottom: 1px solid var(--borderMuted);
   padding-bottom: 4px;
 }
 
 .md h2 {
-  font-size: 15px;
+  font-size: 14px;
 }
 
 .md h3 {
@@ -609,7 +658,7 @@ a, a:link, a:visited {
 .md code {
   background: var(--surface);
   border: 1px solid var(--borderMuted);
-  border-radius: 2px;
+  border-radius: 0px;
   padding: 0 3px;
   font-size: 12px;
 }
@@ -638,7 +687,7 @@ a, a:link, a:visited {
 }
 
 .md a {
-  color: var(--accentTeal);
+  color: var(--link);
 }
 
 .codeblock {
@@ -677,9 +726,9 @@ a, a:link, a:visited {
 /* ---- Tools ---- */
 
 .tools {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 4px;
   margin-top: 4px;
 }
 
@@ -688,9 +737,10 @@ a, a:link, a:visited {
   border-radius: 0px;
   padding: 5px 8px;
   display: flex;
-  flex-direction: column;
+  flex-direction: row;
+  flex-wrap: wrap;
   gap: 4px;
-  background: color-mix(in srgb, var(--backgroundSoft) 60%, transparent);
+  background: var(--backgroundSoft);
 }
 
 .tool--failed {
@@ -706,7 +756,7 @@ a, a:link, a:visited {
 .tool__name {
   font-family: var(--mono);
   font-size: 11px;
-  color: var(--accentTeal);
+  color: var(--link);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -717,6 +767,7 @@ a, a:link, a:visited {
 }
 
 .tool__output {
+  flex-basis: 100%;
   margin: 0;
   font-size: 11px;
   white-space: pre-wrap;
@@ -743,12 +794,12 @@ a, a:link, a:visited {
   justify-content: space-between;
   align-items: center;
   gap: 8px;
-  background: color-mix(in srgb, var(--warning) 10%, var(--backgroundSoft));
+  background: var(--surfaceRaised);
 }
 
 .perm--resolved {
   border-color: var(--borderMuted);
-  background: color-mix(in srgb, var(--backgroundSoft) 60%, transparent);
+  background: var(--backgroundSoft);
 }
 
 .perm__detail {
@@ -827,12 +878,12 @@ a, a:link, a:visited {
   border: 1px solid var(--borderMuted);
   border-radius: 0px;
   padding: 8px 10px;
-  font-size: 13px;
+  font-size: 14px;
   line-height: 1.5;
 }
 
 .composer__input:focus {
-  outline: 1px solid var(--accentTeal);
+  outline: 1px solid var(--link);
 }
 
 .composer__actions {
@@ -894,7 +945,7 @@ a, a:link, a:visited {
 }
 
 .saipenbar__label {
-  font-size: 8px;
+  font-size: 10px;
   letter-spacing: 0.14em;
   color: var(--textMuted);
   text-transform: uppercase;
@@ -923,7 +974,7 @@ a, a:link, a:visited {
 }
 
 .saipenbar__value--action {
-  color: var(--accentTeal);
+  color: var(--link);
 }
 
 .saipenbar__actions {
@@ -941,7 +992,7 @@ a, a:link, a:visited {
   padding: 10px 12px;
   background: var(--surface);
   border: 1px solid var(--borderDark);
-  border-radius: 6px;
+  border-radius: 0px;
   max-height: 40vh;
   overflow: auto;
 }
@@ -959,7 +1010,7 @@ a, a:link, a:visited {
   font-weight: bold;
   letter-spacing: 0.14em;
   text-transform: uppercase;
-  color: var(--accentTeal);
+  color: var(--link);
 }
 
 .saipen-view__path {
@@ -1018,11 +1069,11 @@ a, a:link, a:visited {
 
 .activity__tab {
   flex: 1;
-  background: none;
+  background: var(--surface);
   border: none;
   border-right: 1px solid var(--borderMuted);
   color: var(--textMuted);
-  font-size: 9px;
+  font-size: 10px;
   letter-spacing: 0.12em;
   padding: 7px 6px;
   cursor: pointer;
@@ -1031,7 +1082,7 @@ a, a:link, a:visited {
 .activity__tab--active {
   color: var(--textPrimary);
   background: var(--backgroundSoft);
-  box-shadow: inset 0 2px 0 var(--accentTeal);
+  border-top: 2px solid var(--link);
 }
 
 .activity__body {
@@ -1069,7 +1120,7 @@ a, a:link, a:visited {
 }
 
 .label {
-  font-size: 9px;
+  font-size: 10px;
   letter-spacing: 0.14em;
   color: var(--textMuted);
   text-transform: uppercase;
@@ -1115,7 +1166,7 @@ a, a:link, a:visited {
 }
 
 .queue-item {
-  border-bottom: 1px solid color-mix(in srgb, var(--borderMuted) 55%, transparent);
+  border-bottom: 1px solid var(--borderMuted);
   padding: 8px 10px;
   display: flex;
   flex-direction: column;
@@ -1124,7 +1175,7 @@ a, a:link, a:visited {
 
 .queue-item--leased,
 .queue-item--dispatched {
-  border-left: 2px solid var(--accentTeal);
+  border-left: 2px solid var(--link);
 }
 
 .queue-item__row {
@@ -1142,7 +1193,7 @@ a, a:link, a:visited {
 }
 
 .queue-item__state--queued {
-  color: var(--accentTeal);
+  color: var(--link);
 }
 
 .queue-item__state--done {
@@ -1157,7 +1208,7 @@ a, a:link, a:visited {
 .queue-item__rev,
 .queue-item__attempts {
   font-family: var(--mono);
-  font-size: 9px;
+  font-size: 10px;
   color: var(--textMuted);
 }
 
@@ -1283,7 +1334,7 @@ a, a:link, a:visited {
 .status-dot {
   width: 8px;
   height: 8px;
-  border-radius: 50%;
+  border-radius: 0;
   display: inline-block;
   flex: none;
 }
@@ -1306,19 +1357,12 @@ a, a:link, a:visited {
 .dot {
   width: 7px;
   height: 7px;
-  border-radius: 50%;
+  border-radius: 0;
   display: inline-block;
 }
 
 .dot--running {
-  background: var(--accentTeal);
-  animation: pulse 1.2s infinite;
-}
-
-@keyframes pulse {
-  50% {
-    opacity: 0.3;
-  }
+  background: var(--link);
 }
 
 /* ---- Buttons ---- */
@@ -1334,23 +1378,24 @@ a, a:link, a:visited {
 }
 
 .btn:hover:not(:disabled) {
-  border-color: var(--accentTeal);
+  border-color: var(--link);
 }
 
 .btn:disabled {
-  opacity: 0.5;
+  color: var(--textMuted);
+  background: var(--backgroundSoft);
   cursor: default;
 }
 
 .btn--primary {
-  background: var(--accentTeal);
+  background: var(--link);
   color: var(--background);
-  border-color: var(--accentTeal);
+  border-color: var(--link);
 }
 
 .btn--danger {
-  background: color-mix(in srgb, var(--danger) 20%, var(--surface));
-  color: #e8b0a0;
+  background: var(--danger);
+  color: var(--dangerText);
   border-color: var(--danger);
 }
 
@@ -1367,7 +1412,7 @@ a, a:link, a:visited {
   left: 0;
   right: 0;
   z-index: 50;
-  background: color-mix(in srgb, var(--warning) 18%, var(--backgroundSoft));
+  background: var(--surfaceRaised);
   color: var(--textPrimary);
   border-bottom: 1px solid var(--warning);
   padding: 8px 14px;
@@ -1375,8 +1420,8 @@ a, a:link, a:visited {
 }
 
 .banner--lifecycle {
-  background: color-mix(in srgb, var(--accentTeal) 14%, var(--backgroundSoft));
-  border-bottom-color: var(--accentTeal);
+  background: var(--surfaceRaised);
+  border-bottom-color: var(--link);
   text-transform: capitalize;
 }
 
@@ -1398,7 +1443,7 @@ a, a:link, a:visited {
 
 .toast--error {
   border-color: var(--danger);
-  color: #e8b0a0;
+  color: var(--dangerText);
 }
 
 .muted {
@@ -1478,13 +1523,13 @@ a, a:link, a:visited {
   bottom: 0;
   width: 5px;
   cursor: col-resize;
-  background: transparent;
-  border-left: 1px solid transparent;
+  background: var(--backgroundSoft);
+  border-left: 1px solid var(--borderDark);
 }
 .dock__resizer:hover,
 .dock__resizer--active {
-  background: color-mix(in srgb, var(--accentTeal) 35%, transparent);
-  border-left-color: var(--accentTeal);
+  background: var(--surfaceAlt);
+  border-left-color: var(--link);
 }
 .dock-tabs {
   display: flex;
@@ -1500,7 +1545,7 @@ a, a:link, a:visited {
   overflow-x: auto;
 }
 .dock-tab {
-  background: none;
+  background: var(--surface);
   border: none;
   border-right: 1px solid var(--borderMuted);
   color: var(--textMuted);
@@ -1514,13 +1559,13 @@ a, a:link, a:visited {
 .dock-tab--active {
   color: var(--textPrimary);
   background: var(--backgroundSoft);
-  box-shadow: inset 0 2px 0 var(--accentTeal);
+  border-top: 2px solid var(--link);
 }
 .dock-tab__badge {
-  background: var(--accentTeal);
+  background: var(--link);
   color: var(--background);
-  border-radius: 8px;
-  font-size: 9px;
+  border-radius: 0px;
+  font-size: 10px;
   padding: 0 5px;
   min-width: 14px;
   text-align: center;
@@ -1533,7 +1578,7 @@ a, a:link, a:visited {
   border-left: 1px solid var(--borderMuted);
 }
 .dock-tabs__closeq {
-  font-size: 9px;
+  font-size: 10px;
   color: var(--textMuted);
   display: flex;
   align-items: center;
@@ -1541,7 +1586,7 @@ a, a:link, a:visited {
   white-space: nowrap;
 }
 .dock-tabs__collapse {
-  background: none;
+  background: var(--surface);
   border: none;
   color: var(--textMuted);
   cursor: pointer;
@@ -1556,7 +1601,7 @@ a, a:link, a:visited {
   width: 46px;
 }
 .dock-rail__expand {
-  background: none;
+  background: var(--surface);
   border: none;
   border-bottom: 1px solid var(--borderMuted);
   color: var(--textMuted);
@@ -1565,7 +1610,7 @@ a, a:link, a:visited {
   padding: 6px 0;
 }
 .dock-rail__tab {
-  background: none;
+  background: var(--surface);
   border: none;
   border-bottom: 1px solid var(--borderMuted);
   color: var(--textMuted);
@@ -1576,14 +1621,14 @@ a, a:link, a:visited {
 .dock-rail__tab--active {
   color: var(--textPrimary);
   background: var(--background);
-  box-shadow: inset 2px 0 0 var(--accentTeal);
+  border-left: 2px solid var(--link);
 }
 .dock-placeholder {
   padding: 16px;
   overflow-y: auto;
 }
 .dock-placeholder__title {
-  font-size: 13px;
+  font-size: 14px;
   margin: 0 0 8px;
 }
 
@@ -1599,9 +1644,9 @@ a, a:link, a:visited {
   min-height: 30px;
 }
 .thread-tab {
-  background: none;
+  background: var(--surface);
   border: 1px solid var(--borderMuted);
-  border-radius: 3px;
+  border-radius: 0px;
   color: var(--textPrimary);
   padding: 3px 10px;
   font-size: 12px;
@@ -1609,8 +1654,8 @@ a, a:link, a:visited {
   cursor: pointer;
 }
 .thread-tab--active {
-  background: color-mix(in srgb, var(--accentTeal) 14%, var(--backgroundSoft));
-  border-color: var(--accentTeal);
+  background: var(--surfaceRaised);
+  border-color: var(--link);
 }
 .thread-tab--new {
   font-size: 14px;
@@ -1618,7 +1663,8 @@ a, a:link, a:visited {
   color: var(--textMuted);
 }
 .thread-tab--new:disabled {
-  opacity: 0.4;
+  color: var(--textMuted);
+  background: var(--backgroundSoft);
   cursor: not-allowed;
 }
 
@@ -1655,7 +1701,7 @@ a, a:link, a:visited {
   font-size: 11px;
 }
 .files__crumb {
-  background: none;
+  background: var(--surface);
   border: none;
   padding: 1px 3px;
   color: var(--textMuted);
@@ -1685,7 +1731,7 @@ a, a:link, a:visited {
   background: var(--surfaceRaised);
 }
 .files__row--selected {
-  background: color-mix(in srgb, var(--accentTeal) 12%, var(--backgroundSoft));
+  background: var(--surfaceRaised);
 }
 .files__name {
   flex: 1;
@@ -1693,7 +1739,7 @@ a, a:link, a:visited {
   display: flex;
   align-items: center;
   gap: 6px;
-  background: none;
+  background: var(--surface);
   border: none;
   padding: 2px 0;
   color: var(--textPrimary);
@@ -1714,7 +1760,7 @@ a, a:link, a:visited {
   color: var(--textMuted);
 }
 .files__kind--dir {
-  color: var(--accentTeal);
+  color: var(--link);
 }
 .files__kind--symlink {
   color: var(--textMuted);

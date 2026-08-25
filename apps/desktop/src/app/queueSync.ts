@@ -26,7 +26,17 @@ import { store } from "../state/store";
 let inFlight = false;
 let dirty = false;
 let generation = 0;
+let pendingOffset: number | null = null;
 let onErrorSink: ((message: string) => void) | null = null;
+
+// AUDIT-W2-006: controller/lifecycle OWNERSHIP epoch. Every installed owner
+// (and its async operations) captures the epoch at entry; the disposer bumps
+// it, so completions from a disposed controller perform NO store/error/
+// follow-up mutation and can never commit stale queue truth into a newly
+// mounted session. The disposer also retires the dead owner's single-flight
+// bookkeeping, so a new installation is never blocked by an in-flight read
+// that belongs to a dead controller.
+let epoch = 0;
 
 // PERF-016: single-flight + dirty coalescing for incremental item patches.
 // At most one item read is in flight; additional invalidations during that
@@ -38,32 +48,50 @@ let pendingPatchIds: Set<string> = new Set();
 
 /** Request an authoritative queue snapshot. Safe to call from anywhere and as
  * often as events arrive: the single-flight + dirty rules bound the work. */
-export function requestQueueSnapshot(): void {
+export function requestQueueSnapshot(
+  activeOffset = store.getState().queue.activeOffset,
+): void {
   if (inFlight) {
     dirty = true;
+    pendingOffset = activeOffset;
     return;
   }
-  void loadSnapshot();
+  void loadSnapshot(activeOffset);
 }
 
-async function loadSnapshot(): Promise<void> {
+/** Replace the bounded active page. The backend normalizes stale/huge
+ * offsets and remains the sole source of exact totals. */
+export function requestQueuePage(activeOffset: number): void {
+  requestQueueSnapshot(Math.max(0, Math.trunc(activeOffset)));
+}
+
+async function loadSnapshot(activeOffset: number): Promise<void> {
+  // AUDIT-W2-006: ownership captured at entry — a disposed controller's
+  // completion is an inert no-op (no store patch, no error sink, no flags).
+  const ownerEpoch = epoch;
   inFlight = true;
   const gen = ++generation;
   try {
-    const snap = await commands.queueSnapshot();
-    if (gen !== generation) return; // superseded by a newer read
+    const snap = await commands.queueSnapshot(activeOffset);
+    if (gen !== generation || ownerEpoch !== epoch) return; // superseded or disposed
     store.patch((s) => {
-      const activeBefore = countActive(s.queue.items);
-      const activeAfter = countActive(snap.items);
+      const activeBefore = countActive(s.queue.counts);
+      const activeAfter = countActive(snap.counts);
       const next = {
         ...s,
         queue: {
           status: snap.status,
           paused: snap.paused,
           items: snap.items,
+          counts: snap.counts,
+          activeOffset: snap.active_offset,
+          activeLimit: snap.active_limit,
+          queuedBefore: snap.queued_before,
+          activeHasMore: snap.active_has_more,
           revision: s.queue.revision,
           stale: false,
           payloadPreview: snap.payload_preview !== false,
+          lastChangedId: undefined,
         },
       };
       // "Close tab when done" reacts to the TRANSITION only (non-empty →
@@ -77,24 +105,34 @@ async function loadSnapshot(): Promise<void> {
       return next;
     });
   } catch (e) {
+    if (gen !== generation || ownerEpoch !== epoch) return; // dead owner: silent
     onErrorSink?.(
       `queue snapshot failed: ${String(e)} — the shown queue is stale and read-only until it recovers`,
     );
     store.patch((s) => ({ ...s, queue: { ...s.queue, stale: true } }));
   } finally {
-    inFlight = false;
-    if (dirty) {
-      dirty = false;
-      // Exactly ONE follow-up for everything that arrived while reading.
-      void loadSnapshot();
+    // Only the LATEST in-flight read of the LIVE owner manages the shared
+    // bookkeeping — never a superseded/dead completion racing a new one.
+    if (gen === generation && ownerEpoch === epoch) {
+      inFlight = false;
+      if (dirty) {
+        dirty = false;
+        const nextOffset = pendingOffset ?? store.getState().queue.activeOffset;
+        pendingOffset = null;
+        // Exactly ONE follow-up for everything that arrived while reading.
+        void loadSnapshot(nextOffset);
+      }
     }
   }
 }
 
-function countActive(items: { state: string }[]): number {
-  return items.filter(
-    (i) => i.state === "queued" || i.state === "leased" || i.state === "dispatched" || i.state === "unknown",
-  ).length;
+function countActive(counts: {
+  queued: number;
+  leased: number;
+  dispatched: number;
+  unknown: number;
+}): number {
+  return counts.queued + counts.leased + counts.dispatched + counts.unknown;
 }
 
 /**
@@ -124,6 +162,18 @@ export function installQueueSync(onError: (message: string) => void): () => void
   return () => {
     unsubscribe();
     onErrorSink = null;
+    // AUDIT-W2-006: invalidate every in-flight operation of THIS controller
+    // and retire its single-flight claims, so a subsequent installation
+    // starts clean and dead-owner completions cannot commit.
+    epoch += 1;
+    generation += 1;
+    patchGeneration += 1;
+    inFlight = false;
+    dirty = false;
+    pendingOffset = null;
+    patchInFlight = false;
+    patchDirty = false;
+    pendingPatchIds.clear();
   };
 }
 
@@ -137,9 +187,14 @@ export function installQueueSync(onError: (message: string) => void): () => void
  * - If a reorder was indicated (lastChangedId is null), force a full snapshot.
  */
 async function patchSingleItemLoop(): Promise<void> {
+  // AUDIT-W2-006: same ownership rule as the snapshot path — a disposed
+  // controller's patch completion mutates nothing.
+  const ownerEpoch = epoch;
+  const superseded = () =>
+    myGen !== patchGeneration || ownerEpoch !== epoch;
   patchInFlight = true;
   const myGen = ++patchGeneration;
-  while (pendingPatchIds.size > 0) {
+  while (!superseded() && pendingPatchIds.size > 0) {
     // Take one id at a time; if many accumulate, collapse to snapshot.
     if (pendingPatchIds.size > 3) {
       // Too many distinct items changed — this is a collection invalidation
@@ -153,16 +208,24 @@ async function patchSingleItemLoop(): Promise<void> {
     pendingPatchIds.delete(id);
     try {
       const item = await commands.queueGetItem(id);
-      if (myGen !== patchGeneration) return; // superseded
+      if (superseded()) return; // dead owner: no flags, no store, no follow-up
+      const before = store.getState().queue.items.find((candidate) => candidate.id === id);
+      if (!before || before.state !== item.state) {
+        // A row entering/leaving this bounded page changes aggregate counts
+        // and may require a replacement row. Only a fresh backend page can
+        // reconcile membership without inventing frontend queue truth.
+        pendingPatchIds.clear();
+        patchInFlight = false;
+        requestQueueSnapshot();
+        return;
+      }
       store.patch((s) => {
         if (s.queue.stale) return s;
-        const exists = s.queue.items.some((i) => i.id === id);
-        const items = exists
-          ? s.queue.items.map((i) => (i.id === id ? item : i))
-          : [...s.queue.items, item];
+        const items = s.queue.items.map((i) => (i.id === id ? item : i));
         return { ...s, queue: { ...s.queue, items, lastChangedId: undefined } };
       });
     } catch {
+      if (superseded()) return; // dead owner: silent
       // Item no longer present or read failed: full snapshot.
       pendingPatchIds.clear();
       patchInFlight = false;
@@ -170,6 +233,7 @@ async function patchSingleItemLoop(): Promise<void> {
       return;
     }
   }
+  if (superseded()) return;
   patchInFlight = false;
   if (patchDirty) {
     patchDirty = false;
@@ -196,8 +260,10 @@ export function requestQueueItemPatch(itemId: string): void {
 
 /** Test-only reset of the owner's internal lifecycle state. */
 export function resetQueueSyncForTest(): void {
+  epoch += 1;
   inFlight = false;
   dirty = false;
+  pendingOffset = null;
   generation += 1;
   patchInFlight = false;
   patchDirty = false;

@@ -1426,6 +1426,45 @@ async fn permission_reply_uses_typed_api() {
     adapter.stop().await.expect("stop");
 }
 
+#[tokio::test(flavor = "multi_thread")]
+async fn question_reply_and_reject_use_global_typed_routes() {
+    let _guard = fixture_guard();
+    let harness = Harness::new();
+    let adapter = start_with_env(&harness, &[("FIXTURE_MSG_MODE", "hang")]).await;
+    let mut collector = Collector::new(&harness.bus);
+    let session = create_session(&adapter).await;
+    let run = send(&adapter, &session, "needs answers", None).await;
+    collector
+        .wait_for(
+            "message.started",
+            |e| matches!(e, Event::MessageStarted { run_id, .. } if run_id.as_str() == run.run_id),
+            Duration::from_secs(10),
+        )
+        .await;
+
+    adapter
+        .resolve_question(
+            &session.id,
+            "que_reply",
+            &saiwork_core::engine::QuestionResolution::Answers(vec![vec!["Yes".into()]]),
+        )
+        .await
+        .expect("question reply");
+    adapter
+        .resolve_question(
+            &session.id,
+            "que_reject",
+            &saiwork_core::engine::QuestionResolution::Rejected,
+        )
+        .await
+        .expect("question reject");
+
+    adapter.cancel(&run.run_id).await.expect("cancel");
+    let terminal = collector.wait_terminal(&run.run_id, Duration::from_secs(10)).await;
+    assert!(matches!(terminal, Event::MessageCancelled { .. }));
+    adapter.stop().await.expect("stop");
+}
+
 // ---------------------------------------------------------------------------
 // Idle behavior (§170–§171)
 // ---------------------------------------------------------------------------

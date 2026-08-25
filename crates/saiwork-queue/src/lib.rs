@@ -12,8 +12,9 @@ pub mod repo;
 
 pub use manager::{DispatchHooks, QueueManager};
 pub use model::{
-    DispatchCandidate, EnqueueRequest, PortError, QueueDiagnostics, QueueError, QueueItem,
-    QueueSnapshot, QueueState, QueueStatus, SessionMode, DISPATCH_CANDIDATE_PAGE_SIZE,
+    DispatchCandidate, EnqueueRequest, PortError, QueueCounts, QueueDiagnostics, QueueError,
+    QueueItem, QueueSnapshot, QueueState, QueueStatus, SessionMode,
+    DISPATCH_CANDIDATE_PAGE_SIZE, SNAPSHOT_ACTIVE_PAGE_SIZE, SNAPSHOT_HISTORY_LIMIT,
 };
 pub use port::{DispatchReceipt, EnginePort, EngineState, SessionCreateOutcome};
 pub use repo::QueueRepo;

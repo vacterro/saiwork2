@@ -84,6 +84,8 @@ export function QueuePanel({ state, onError }: Props) {
   }, [queuedItems]);
 
   const visibleItems = state.queue.items.slice(0, visible);
+  const terminalCount =
+    state.queue.counts.done + state.queue.counts.failed + state.queue.counts.cancelled;
 
   const startEdit = useCallback(async (item: QueueItem) => {
     // The snapshot carries only a bounded payload preview (TASK 24 perf + the
@@ -154,6 +156,25 @@ export function QueuePanel({ state, onError }: Props) {
           </span>
         )}
         <span className="queue-panel__spacer" />
+        {terminalCount > 0 && (
+          <button
+            className="btn btn--small btn--danger"
+            onClick={async () => {
+              if (!canAdmin.allowed) {
+                if (canAdmin.reason) onError(canAdmin.reason);
+                return;
+              }
+              if (!(await confirmDialog(`Permanently delete ${terminalCount} finished queue item${terminalCount === 1 ? "" : "s"}? Active and unknown work will be kept.`))) {
+                return;
+              }
+              commands.queuePurgeTerminal().catch((e) => onError(String(e)));
+            }}
+            disabled={!canAdmin.allowed}
+            title={canAdmin.reason}
+          >
+            Clear finished ({terminalCount})
+          </button>
+        )}
         {state.queue.paused ? (
           <button
             className="btn btn--small"

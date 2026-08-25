@@ -1726,7 +1726,7 @@ async fn dispatched_without_run_id_fails_closed_invariantly() {
             let env = sub.recv().await.unwrap();
             match env.event {
                 saiwork_events::Event::QueueChanged { item_id, state } => {
-                    if item_id.as_str() == "bad-dispatch"
+                    if item_id.as_ref().is_some_and(|q| q.as_str() == "bad-dispatch")
                         && matches!(state.as_str(), "cancelled")
                     {
                         saw_cancelled = true;
@@ -2044,4 +2044,68 @@ async fn wrong_workspace_binding_waits_not_fails() {
     wait_state(&h, &item.id, QueueState::Done, Duration::from_secs(10)).await;
     assert_eq!(port.send_count(), 1, "exactly one send after rebind");
     assert_eq!(h.get(&item.id).workspace_id, "B");
+}
+
+/// AUDIT-W2-001: reorder publishes the COLLECTION-invalidation contract
+/// (`item_id = None`) so the frontend takes an authoritative full snapshot;
+/// ordinary single-row transitions keep naming their item for the incremental
+/// patch path.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn reorder_event_is_collection_invalidated_single_rows_stay_named() {
+    let h = Harness::new().await;
+    let (m, _port) = h.manager(None, None);
+    let a = h.enqueue(&m, "A", None);
+    let b = h.enqueue(&m, "B", None);
+
+    let mut sub = h.bus.subscribe();
+    m.reorder(&b.id, b.revision, 0).unwrap();
+
+    // Reorder: exactly one queue.changed with NO item id.
+    let env = tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            let env = sub.recv().await.unwrap();
+            if matches!(env.event, saiwork_events::Event::QueueChanged { .. }) {
+                break env;
+            }
+        }
+    })
+    .await
+    .expect("reorder must announce queue.changed");
+    match env.event {
+        saiwork_events::Event::QueueChanged { item_id, .. } => {
+            assert!(
+                item_id.is_none(),
+                "reorder must invalidate the collection, got item_id {item_id:?}"
+            );
+        }
+        _ => unreachable!(),
+    }
+
+    // Single-row transition (retry on a failed row) still names its item.
+    h.db_waiter().mark_failed_leased(&a.id, "engine", "boom").unwrap();
+    let refailed = h.get(&a.id);
+    drop(sub);
+    let mut sub2 = h.bus.subscribe();
+    m.retry(&refailed.id, refailed.revision).unwrap();
+    let env = tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            let env = sub2.recv().await.unwrap();
+            if matches!(env.event, saiwork_events::Event::QueueChanged { .. }) {
+                break env;
+            }
+        }
+    })
+    .await
+    .expect("retry must announce queue.changed");
+    match env.event {
+        saiwork_events::Event::QueueChanged { item_id, state } => {
+            assert_eq!(
+                item_id.as_ref().map(|q| q.as_str()),
+                Some(refailed.id.as_str()),
+                "single-row transition keeps its named item"
+            );
+            assert_eq!(state, "queued");
+        }
+        _ => unreachable!(),
+    }
 }

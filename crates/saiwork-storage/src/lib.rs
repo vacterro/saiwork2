@@ -16,11 +16,11 @@ use uuid::Uuid;
 
 pub use error::StorageError;
 
-const SCHEMA_VERSION_APPLIED: i64 = 8; // must equal migrations().len()
+const SCHEMA_VERSION_APPLIED: i64 = 9; // must equal migrations().len()
 
 /// Upper bound on a single `app_settings` value (defense in depth, T-052): the
 /// settings table is for small UI preferences, never large blobs.
-const MAX_SETTING_VALUE_BYTES: usize = 4 * 1024 * 1024;
+pub const MAX_SETTING_VALUE_BYTES: usize = 4 * 1024 * 1024;
 
 /// Classify one `PRAGMA integrity_check` output row. Only the exact `ok`
 /// verdict is success; SQLite reports corruption as one or more
@@ -245,6 +245,32 @@ impl Db {
         conn.execute("DELETE FROM app_settings WHERE key = ?1", params![key])
             .map_err(StorageError::Query)?;
         Ok(())
+    }
+
+    /// Apply a validated settings batch as ONE atomic unit (AUDIT-CORE-002):
+    /// every upsert commits together or not at all. Callers must validate
+    /// first — this method adds only the durable-size guard, because a
+    /// partial multi-key import was observed to survive a later-field
+    /// rejection (fail-closed whole-preset contract).
+    pub fn set_settings_batch(&self, batch: &[(&str, &str)]) -> Result<(), StorageError> {
+        for (key, value) in batch {
+            if value.len() > MAX_SETTING_VALUE_BYTES {
+                return Err(StorageError::InvalidData(format!(
+                    "setting '{key}' value exceeds the {MAX_SETTING_VALUE_BYTES}-byte limit"
+                )));
+            }
+        }
+        self.transaction(|tx| {
+            let mut stmt = tx.prepare(
+                "INSERT INTO app_settings (key, value, updated_at)
+                 VALUES (?1, ?2, ?3)
+                 ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at",
+            )?;
+            for (key, value) in batch {
+                stmt.execute(params![key, value, now_ms()])?;
+            }
+            Ok(())
+        })
     }
 
     pub fn get_active_workspace(&self) -> Result<Option<String>, StorageError> {
@@ -568,6 +594,75 @@ impl Db {
         conn.execute("DELETE FROM sessions_meta WHERE id = ?1", params![id])
             .map_err(StorageError::Query)?;
         Ok(())
+    }
+
+    /// Bounded recent-session page (AUDIT-PERF-001): `ORDER BY created_at
+    /// DESC LIMIT ?`, planned through the v9 recency indexes — the planner
+    /// must never full-scan + temp-sort lifetime history for a bounded page.
+    /// Separate scoped/unscoped statements keep the nullable-OR predicate out
+    /// of the plan. Owned with migration v9's index definitions.
+    pub fn list_recent_session_meta(
+        &self,
+        workspace_id: Option<&str>,
+        limit: usize,
+    ) -> Result<Vec<SessionMetaRow>, StorageError> {
+        let limit_i = i64::try_from(limit).unwrap_or(i64::MAX);
+        let conn = self.conn.lock().expect("db mutex poisoned");
+        let map_row = |r: &rusqlite::Row<'_>| {
+            Ok(SessionMetaRow {
+                id: r.get(0)?,
+                workspace_id: r.get(1)?,
+                engine_id: r.get(2)?,
+                engine_session_id: r.get(3)?,
+                display_name: r.get(4)?,
+                last_opened_at: r.get(5)?,
+                created_at: r.get(6)?,
+                updated_at: r.get(7)?,
+                resumable: r.get(8)?,
+            })
+        };
+        match workspace_id {
+            Some(ws) => {
+                let mut stmt = conn
+                    .prepare(
+                        "SELECT id, workspace_id, engine_id, engine_session_id, display_name, last_opened_at, created_at, updated_at, resumable
+                         FROM sessions_meta
+                         WHERE workspace_id = ?1
+                         ORDER BY created_at DESC
+                         LIMIT ?2",
+                    )
+                    .map_err(StorageError::Query)?;
+                let rows = stmt
+                    .query_map(params![ws, limit_i], map_row)
+                    .map_err(StorageError::Query)?;
+                rows.collect::<Result<Vec<_>, _>>()
+                    .map_err(StorageError::Query)
+            }
+            None => {
+                let mut stmt = conn
+                    .prepare(
+                        "SELECT id, workspace_id, engine_id, engine_session_id, display_name, last_opened_at, created_at, updated_at, resumable
+                         FROM sessions_meta
+                         ORDER BY created_at DESC
+                         LIMIT ?1",
+                    )
+                    .map_err(StorageError::Query)?;
+                let rows = stmt
+                    .query_map(params![limit_i], map_row)
+                    .map_err(StorageError::Query)?;
+                rows.collect::<Result<Vec<_>, _>>()
+                    .map_err(StorageError::Query)
+            }
+        }
+    }
+
+    /// Exact durable session-metadata row count (AUDIT-PERF-001). Diagnostics
+    /// must report one integer without hydrating/sorting history; this is an
+    /// index-assisted aggregate and never mutates any session cache.
+    pub fn session_count(&self) -> Result<i64, StorageError> {
+        let conn = self.conn.lock().expect("db mutex poisoned");
+        conn.query_row("SELECT COUNT(*) FROM sessions_meta", [], |r| r.get(0))
+            .map_err(StorageError::Query)
     }
 
     /// Bulk-delete session metadata for one workspace (safe Forget, TASK 24
@@ -1263,6 +1358,77 @@ mod tests {
     }
 
     // ---- transactions ----
+
+    fn meta_row(id: &str, ws: Option<&str>, created_at: i64) -> SessionMetaRow {
+        SessionMetaRow {
+            id: id.into(),
+            workspace_id: ws.map(Into::into),
+            engine_id: "oc".into(),
+            engine_session_id: Some(format!("upstream-{id}")),
+            display_name: Some(id.into()),
+            last_opened_at: Some(created_at),
+            created_at,
+            updated_at: created_at,
+            resumable: true,
+        }
+    }
+
+    #[test]
+    fn recent_session_meta_page_is_bordered_by_limit_and_recency() {
+        let db = Db::open_in_memory().unwrap();
+        for i in 0..50i64 {
+            db.upsert_session_meta(&meta_row(&format!("a{i:02}"), Some("ws-a"), i))
+                .unwrap();
+        }
+        for i in 0..10i64 {
+            db.upsert_session_meta(&meta_row(&format!("b{i:02}"), Some("ws-b"), 1000 + i))
+                .unwrap();
+        }
+
+        // Scoped page: exactly `limit` rows, newest-first, only this scope.
+        let page = db.list_recent_session_meta(Some("ws-a"), 7).unwrap();
+        assert_eq!(page.len(), 7);
+        let created: Vec<i64> = page.iter().map(|r| r.created_at).collect();
+        let mut sorted = created.clone();
+        sorted.sort_unstable_by_key(|c| std::cmp::Reverse(*c));
+        assert_eq!(created, sorted, "created_at DESC");
+        assert!(page.iter().all(|r| r.workspace_id.as_deref() == Some("ws-a")));
+
+        // Unscoped page spans scopes but stays bounded + newest-first.
+        let all = db.list_recent_session_meta(None, 5).unwrap();
+        assert_eq!(all.len(), 5);
+        assert_eq!(all[0].workspace_id.as_deref(), Some("ws-b"));
+
+        // AUDIT-PERF-001: the scoped plan must be index-assisted with NO
+        // temp-B-tree sort over lifetime history.
+        let plans = db.with_conn(|conn| {
+            let mut stmt = conn.prepare(
+                "EXPLAIN QUERY PLAN SELECT id FROM sessions_meta \
+                 WHERE workspace_id = ?1 ORDER BY created_at DESC LIMIT ?2",
+            )?;
+            let rows = stmt
+                .query_map(params!["ws-a", 7], |r| r.get::<_, String>(3))
+                .map_err(StorageError::Query)?;
+            rows.collect::<Result<Vec<_>, _>>().map_err(StorageError::Query)
+        }).unwrap();
+        let joined = plans.join("\n");
+        assert!(
+            joined.contains("idx_sessions_meta_ws_created"),
+            "plan must use the recency index, got: {joined}"
+        );
+        assert!(!joined.contains("TEMP B-TREE"), "no temp sort allowed, got: {joined}");
+    }
+
+    #[test]
+    fn session_count_is_exact_and_cheap() {
+        let db = Db::open_in_memory().unwrap();
+        assert_eq!(db.session_count().unwrap(), 0);
+        for i in 0..12 {
+            db.upsert_session_meta(&meta_row(&format!("s{i}"), None, i)).unwrap();
+        }
+        db.delete_session_meta("s0").unwrap();
+        assert_eq!(db.session_count().unwrap(), 11);
+    }
 
     #[test]
     fn transaction_commits_atomically() {

@@ -218,4 +218,19 @@ pub const MIGRATIONS: &[&str] = &[
     CREATE INDEX idx_queue_items_dispatch_keyset
         ON queue_items (state, order_key, created_at, id);
     "#,
+    // v9 — session recency indexes (AUDIT-PERF-001). The recent-session
+    // projection is `ORDER BY created_at DESC LIMIT ?` (scoped or unscoped);
+    // without these indexes SQLite full-scans sessions_meta and sorts the
+    // whole lifetime history through a TEMP B-tree on EVERY frontend list
+    // request and the diagnostics count. Both index shapes are owned with
+    // the exact queries in `list_recent_session_meta`:
+    // - `(workspace_id, created_at DESC)`: the scoped recent page;
+    // - `(created_at DESC)`: the unscoped recent page.
+    // No rows change meaning; pure query-plan repair.
+    r#"
+    CREATE INDEX idx_sessions_meta_ws_created
+        ON sessions_meta (workspace_id, created_at DESC);
+    CREATE INDEX idx_sessions_meta_created
+        ON sessions_meta (created_at DESC);
+    "#,
 ];

@@ -12,8 +12,9 @@ use saiwork_storage::{Db, StorageError};
 use uuid::Uuid;
 
 use crate::model::{
-    DispatchCandidate, EnqueueRequest, QueueError, QueueItem, QueueState, SessionMode,
-    DISPATCH_CANDIDATE_PAGE_SIZE,
+    DispatchCandidate, EnqueueRequest, QueueCounts, QueueError, QueueItem, QueuePage, QueueState,
+    SessionMode, DISPATCH_CANDIDATE_PAGE_SIZE, SNAPSHOT_ACTIVE_PAGE_SIZE,
+    SNAPSHOT_HISTORY_LIMIT,
 };
 
 pub struct QueueRepo {
@@ -190,6 +191,40 @@ fn query_items_snapshot<P: rusqlite::Params>(
         out.push(row_to_item_snapshot(&row)?);
     }
     Ok(out)
+}
+
+fn query_state_counts(
+    conn: &rusqlite::Connection,
+) -> Result<[(QueueState, usize); 7], StorageError> {
+    let mut stmt = conn
+        .prepare("SELECT state, COUNT(*) FROM queue_items GROUP BY state")
+        .map_err(StorageError::from)?;
+    let mut counts = [
+        (QueueState::Queued, 0usize),
+        (QueueState::Leased, 0),
+        (QueueState::Dispatched, 0),
+        (QueueState::Done, 0),
+        (QueueState::Failed, 0),
+        (QueueState::Cancelled, 0),
+        (QueueState::Unknown, 0),
+    ];
+    let mut rows = stmt.query([]).map_err(StorageError::from)?;
+    while let Some(row) = rows.next().map_err(StorageError::from)? {
+        let state: String = row.get(0).map_err(StorageError::from)?;
+        let n: i64 = row.get(1).map_err(StorageError::from)?;
+        let parsed = QueueState::from_str(&state).ok_or_else(|| {
+            StorageError::InvalidData(
+                QueueError::InvalidPersistedRow {
+                    row_id: "<aggregate>".into(),
+                    field: "state",
+                    value: state,
+                }
+                .to_string(),
+            )
+        })?;
+        counts[parsed as usize].1 = n as usize;
+    }
+    Ok(counts)
 }
 
 const ITEM_COLUMNS: &str = "id, workspace_id, engine_id, session_id, payload, state, order_key, \
@@ -609,7 +644,7 @@ impl QueueRepo {
         })?)
     }
 
-    /// Full snapshot for the UI: active items first, then bounded history.
+    /// One bounded UI snapshot page: active items first, then bounded history.
     /// `unknown` items are active (blocked, user-resolvable — TASK 23 §149).
     /// Payloads are SQL-PROJECTED to `PAYLOAD_PREVIEW_BYTES` bytes (§13,
     /// TASK 24 perf): `substr(CAST(payload AS BLOB), 1, N)` clips in the
@@ -617,28 +652,55 @@ impl QueueRepo {
     /// serializes/mounts tens of MiB into Rust memory or IPC. The durable
     /// rows are untouched, `payload_truncated` flags the projection, and the
     /// full payload is fetched via `get` only when editing/inspecting.
-    pub fn list_snapshot(&self, history_limit: usize) -> Result<Vec<QueueItem>, QueueError> {
+    pub fn snapshot_page(&self, requested_offset: usize) -> Result<QueuePage, QueueError> {
         let preview = crate::model::PAYLOAD_PREVIEW_BYTES as i64;
         let projection = "substr(CAST(payload AS BLOB), 1, :P) AS payload, state, order_key, \
              revision, session_mode, model, lease_id, leased_at, attempt_count, run_id, \
              last_error, last_error_code, created_at, updated_at, \
              (octet_length(payload) > :P) AS payload_truncated";
         Ok(self.db.with_conn(|conn| {
+            let state_counts = query_state_counts(conn)?;
+            let counts = QueueCounts::from_state_counts(&state_counts);
+            let active_total = counts.active();
+            let requested_offset = (requested_offset / SNAPSHOT_ACTIVE_PAGE_SIZE)
+                .saturating_mul(SNAPSHOT_ACTIVE_PAGE_SIZE);
+            let last_offset = if active_total == 0 {
+                0
+            } else {
+                ((active_total - 1) / SNAPSHOT_ACTIVE_PAGE_SIZE) * SNAPSHOT_ACTIVE_PAGE_SIZE
+            };
+            let active_offset = requested_offset.min(last_offset);
             let mut items = query_items_snapshot(
                 conn,
                 &format!(
                     "SELECT id, workspace_id, engine_id, session_id, {projection} \
                      FROM queue_items \
                      WHERE state IN ('queued','leased','dispatched','unknown') \
-                     ORDER BY order_key, created_at, id"
+                     ORDER BY order_key, created_at, id LIMIT :A OFFSET :O"
                 ),
-                rusqlite::named_params! { ":P": preview },
+                rusqlite::named_params! {
+                    ":P": preview,
+                    ":A": SNAPSHOT_ACTIVE_PAGE_SIZE as i64,
+                    ":O": active_offset as i64,
+                },
             )
             .map_err(|e| StorageError::InvalidData(e.to_string()))?;
-            // PERF-002: the terminal/stationary history is hard-bounded by
-            // `LIMIT :L` (history_limit) — a snapshot can never materialize an
-            // unbounded slice of completed items. The active-state set above is
-            // bounded by nature (only live/queued/dispatched rows).
+            // The active-page offset counts every non-terminal row, while the
+            // reorder API indexes only QUEUED rows. Compute the exact prefix
+            // count in SQLite so page-local movement never guesses from a
+            // partial frontend projection.
+            let queued_before: i64 = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM (
+                         SELECT state FROM queue_items
+                         WHERE state IN ('queued','leased','dispatched','unknown')
+                         ORDER BY order_key, created_at, id LIMIT :O
+                     ) WHERE state = 'queued'",
+                    rusqlite::named_params! { ":O": active_offset as i64 },
+                    |row| row.get(0),
+                )
+                .map_err(StorageError::from)?;
+            // Terminal/stationary history is independently hard-bounded.
             let history = query_items_snapshot(
                 conn,
                 &format!(
@@ -647,37 +709,41 @@ impl QueueRepo {
                      WHERE state IN ('done','failed','cancelled') \
                      ORDER BY updated_at DESC LIMIT :L"
                 ),
-                rusqlite::named_params! { ":P": preview, ":L": history_limit as i64 },
+                rusqlite::named_params! {
+                    ":P": preview,
+                    ":L": SNAPSHOT_HISTORY_LIMIT as i64,
+                },
             )
             .map_err(|e| StorageError::InvalidData(e.to_string()))?;
             items.extend(history);
-            Ok(items)
+            Ok(QueuePage {
+                items,
+                counts,
+                active_offset,
+                queued_before: queued_before as usize,
+                active_has_more: active_offset
+                    .saturating_add(SNAPSHOT_ACTIVE_PAGE_SIZE)
+                    < active_total,
+            })
         })?)
     }
 
     /// Counts per state (diagnostics, §154). Unknown persisted states are
     /// surfaced as typed row errors, never silently omitted (TASK 24 §9).
     pub fn counts(&self) -> Result<[(QueueState, usize); 7], QueueError> {
+        Ok(self.db.with_conn(query_state_counts)?)
+    }
+
+    /// Permanently remove terminal history only. Active and ambiguous rows
+    /// are deliberately outside the predicate: QUEUED/LEASED/DISPATCHED are
+    /// work ownership, while UNKNOWN may still represent external mutation.
+    pub fn purge_terminal(&self) -> Result<usize, QueueError> {
         Ok(self.db.with_conn(|conn| {
-            let mut stmt = conn
-                .prepare("SELECT state, COUNT(*) FROM queue_items GROUP BY state")
-                .map_err(StorageError::from)?;
-            let mut counts = [(QueueState::Queued, 0usize); 7];
-            let mut rows = stmt.query([]).map_err(StorageError::from)?;
-            while let Some(row) = rows.next().map_err(StorageError::from)? {
-                let state: String = row.get(0).map_err(StorageError::from)?;
-                let n: i64 = row.get(1).map_err(StorageError::from)?;
-                let s = QueueState::from_str(&state).ok_or_else(|| {
-                    QueueError::InvalidPersistedRow {
-                        row_id: "<aggregate>".into(),
-                        field: "state",
-                        value: state,
-                    }
-                })
-                .map_err(|e| StorageError::InvalidData(e.to_string()))?;
-                counts[s as usize].1 = n as usize;
-            }
-            Ok(counts)
+            conn.execute(
+                "DELETE FROM queue_items WHERE state IN ('done','failed','cancelled')",
+                [],
+            )
+            .map_err(StorageError::from)
         })?)
     }
 
@@ -1262,6 +1328,10 @@ pub fn current_run(&self, id: &str) -> Result<Option<(String, Option<String>)>, 
                 return Ok(());
             }
             if pos.abs_diff(idx) == 1 {
+                // AUDIT-W2-002: revision is the CAS token for EVERY
+                // user-visible mutation — the displaced swap partner bumps
+                // too, so a stale frontend holding its old row can never pass
+                // CAS against ordering state that silently changed under it.
                 let other_pos = idx;
                 let (moved_id, moved_key) = &order[pos];
                 let (other_id, other_key) = &order[other_pos];
@@ -1272,29 +1342,27 @@ pub fn current_run(&self, id: &str) -> Result<Option<(String, Option<String>)>, 
                 )
                 .map_err(StorageError::from)?;
                 tx.execute(
-                    "UPDATE queue_items SET order_key = ?2, updated_at = ?3 WHERE id = ?1",
+                    "UPDATE queue_items SET order_key = ?2, revision = revision + 1, updated_at = ?3 WHERE id = ?1",
                     rusqlite::params![other_id, moved_key, now],
                 )
                 .map_err(StorageError::from)?;
                 return Ok(());
             }
+            let now = now_ms();
             let (moved_id, _) = order.remove(pos);
             order.insert(idx, (moved_id, 0));
             for (i, (oid, old_key)) in order.iter().enumerate() {
                 if *old_key != (i + 1) as i64 {
+                    // AUDIT-W2-002: every shifted row bumps exactly once in
+                    // the SAME statement as its new order_key — including the
+                    // moved item — so no second bump exists anywhere else.
                     tx.execute(
-                        "UPDATE queue_items SET order_key = ?2, updated_at = ?3 WHERE id = ?1",
-                        rusqlite::params![oid, (i + 1) as i64, now_ms()],
+                        "UPDATE queue_items SET order_key = ?2, revision = revision + 1, updated_at = ?3 WHERE id = ?1",
+                        rusqlite::params![oid, (i + 1) as i64, now],
                     )
                     .map_err(StorageError::from)?;
                 }
             }
-            // Bump the moved item's revision inside the same transaction.
-            tx.execute(
-                "UPDATE queue_items SET revision = revision + 1 WHERE id = ?1",
-                rusqlite::params![id],
-            )
-            .map_err(StorageError::from)?;
             Ok(())
         })
     }

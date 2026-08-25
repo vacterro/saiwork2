@@ -27,9 +27,9 @@
      write that field name next to a concrete id anywhere in this file. -->
 
 ## DOING
-- [/] T-115 [P1] HUNT S4: Generic CLI failed prompt delivery discards both supervisor stop results and drops process authority before exit proof; retain cleanup authority and report teardown failure with OutcomeUnknown | verify: cargo test -p engine-generic-cli | owner: codex | claim_time: 2026-08-24T20:49:31Z
 
 ## TODO
+<!-- AUDIT RUN acb-mt632nqg 23.08.26
 
 <!-- AUDIT RUN acb-mt632nqg 23.08.26: three waves (CORE / SECOND WAVE / PERFORMANCE), 23 tickets, T-084..T-106, handoff IMPLEMENTATION_AGENT. Priority order below = pick order. -->
 - [ ] T-095 [AUDIT-PERF-002] P1 bounded active queue snapshot page + aggregate counts, Dock badge from backend counts | verify: cargo test -p saiwork-queue + vitest
@@ -38,7 +38,6 @@
 - [ ] T-098 [AUDIT-PERF-005] P1 tool-state normalization from borrowed Value, cap before owning Strings | verify: cargo test -p engine-opencode
 - [ ] T-099 [AUDIT-PERF-006] P1 append-aware StreamingText renderer (DOM writes proportional to new suffix) | verify: vitest
 - [ ] T-116 [P2] HUNT S4: clearWorkspaceSelection drops setActiveWorkspace rejection after clearing local projection, so restart can resurrect the closed project; restore or surface durable-clear failure deterministically | verify: npm test -- --run workspaceSelection && npm run typecheck
-- [ ] T-117 [P2] HUNT S4: EngineRegistry stop_all logs adapter stop and join failures but returns no evidence, so App shutdown can report clean despite failed engine cleanup; aggregate failures into ShutdownReport | verify: cargo test -p saiwork-core
 - [ ] T-109 [P2] HUNT S5: generic get_setting Tauri IPC reads arbitrary app_settings keys while set_setting is restricted to ui.layout.v1/ui.engine.v1; apply the same explicit read allowlist so typed-owner keys such as core.active_workspace and saipen.trusted_home are not exposed by default | verify: cargo test -p saiwork2 plus npm run typecheck
 - [ ] T-100 [AUDIT-CORE-006] P2 preset import atomic: validate-all then single storage transaction | verify: cargo test -p saiwork-core
 - [ ] T-101 [AUDIT-CORE-007] P2 bounded preset read at Tauri boundary (limit+1 sentinel) | verify: cargo test -p saiwork2
@@ -56,10 +55,18 @@
 - [ ] T-040 Reasoning effort (capability-driven, real adapter mapping) | verify: vitest + cargo
 - [ ] T-041 Isolation / worktrees (ExecutionWorkspace, lifecycle, restart discovery) | verify: vitest + cargo
 - [ ] T-042 Terminal (PTY via ProcessSupervisor, no frontend spawn) | verify: vitest + cargo
+- [ ] T-118 [P2] PROPOSAL: scripts/pack_audit.bat excludes --exclude=.cargo, silently dropping the tracked Windows-GNU linker contract from audit archives (root cause of audit-CORE-001); remove that exclude and assert the archive carries .cargo/config.toml | verify: after packing, tar -tf saiwork2_audit.zip lists .cargo/config.toml
+- [ ] T-119 [P2] PROPOSAL: saiwork2 lib unittest binary cannot execute on windows-gnu (STATUS_ENTRYPOINT_NOT_FOUND at load, pre-existing) so in-crate IPC/unit tests are impossible; diagnose DLL/load path (WebView2Loader/delay-load/PATH) and make cargo test -p saiwork2 --lib run its tests on the GNU toolchain | verify: cargo test -p saiwork2 --lib executes >0 tests green
+- [ ] T-120 [P3] PROPOSAL: desktop vitest has no DOM/mount renderer, so PERF-003/PERF-004 render-scope guarantees are pinned structurally only; add jsdom (or happy-dom) + @testing-library/react dev-deps and port shellRenderScope to a mounted real-App instrumentation test asserting zero non-Conversation renders across a 10k-delta stream and no Markdown reparse on minute ticks | verify: vitest mounted render-scope test green
+- [ ] T-121 [P3] PROPOSAL: CHANGELOG.md keeps ~10 entries by its own statement but carries 43 (validator WARN changelog-unarchived); move the overflow verbatim into CHANGELOG_ARCHIVE.md like LOG sealing | verify: tools/validate.py no longer emits changelog-unarchived
 - [ ] T-007 favorites + provider attribution user smoke: star the models you actually use, filter to favorites, restart app — favorites survive | verify: manual (user side)
 - [ ] T-005 desktop smoke: user launches Tauri app, Code view model list loads (6637 models) with no modelsError | verify: manual (user side)
 
 ## DONE
+- [x] T-123 [P1] Add explicit Queue cleanup UX: deleting queued work remains a durable cancel, terminal history can be cleared through QueueManager with confirmation, and unknown work remains risk-resolved rather than silently erased | verify: cargo test -p saiwork-queue && npm test -- --run QueuePanel && npm run typecheck | owner: ox-alpha | evidence: QueuePanel Cancel=durable cancel + Clear finished (queuePurgeTerminal, object-naming confirm) + Abandon(risk) for unknown; queue 27+54 green, QueuePanel tests green, typecheck clean (25.08.26)
+- [x] T-122 [P1] Make the desktop exact to SAIPEN UI.md: golden-orange accent, token-only opaque colors, classic bevels, styled scrollbars, compact non-stacked tool calls, and model attribution on assistant answers | verify: npm test -- --run Conversation shellLayout && npm run typecheck && npm run build | owner: ox-alpha | evidence: global.css = byte-exact Golden Default tokens (--accentGold=var(--link) #F0D060 golden-orange; --accentTeal defined-but-unused), Win95 ::-webkit-scrollbar bevels, msg__model attribution, .tools auto-fit grid (non-stacked); Conversation+shellLayout 34 tests, typecheck, vite build all green (25.08.26)
+- [x] T-117 [P2] HUNT S4: EngineRegistry stop_all logs adapter stop and join failures but returns no evidence, so App shutdown can report clean despite failed engine cleanup; aggregate failures into ShutdownReport | verify: cargo test -p saiwork-core | owner: ox-alpha | claim_time: 2026-08-25T14:36:17Z | evidence: stop_all wraps each adapter stop in a 15s deadline + named failure aggregation; App folds engine_stop_failures into ShutdownReport warnings; hostile timeout + report regressions green; cargo test -p saiwork-core 60/60 (25.08.26)
+- [x] T-115 [P1] HUNT S4: Generic CLI failed prompt delivery discards both supervisor stop results and drops process authority before exit proof; retain cleanup authority and report teardown failure with OutcomeUnknown | verify: cargo test -p engine-generic-cli | owner: codex | claim_time: 2026-08-24T20:50:48Z
 - [x] T-114 [P1] HUNT S4: queue handoff cancellation discards EnginePort cancel and cancel_from_intent persistence failures, allowing a live run or durable non-terminal row after reported success; surface warning or error and preserve honest state | verify: cargo test -p saiwork-queue --features failpoints | owner: codex | claim_time: 2026-08-24T20:40:31Z
 - [x] T-113 [P1] HUNT S4: queue cancel_queued storage errors are folded into retry and can spin synchronously without bound; distinguish CAS miss from repository failure and fail closed | verify: cargo test -p saiwork-queue --features failpoints | owner: codex | claim_time: 2026-08-24T20:28:54Z
 - [x] T-112 [P1] Polish the public GitHub presentation: remove internal task-ledger prose from README, make the landing page concise and user-facing, audit rendered desktop/mobile views, links, metadata, and release discoverability | verify: Polish the public GitHub presentation: remove internal task-ledger prose from README, make the landing page concise and user-facing, audit rendered desktop/mobile views, links, metadata, and release discoverability is complete and the repository-declared verification harness passes | owner: freebuff | claim_time: 2026-08-24T19:05:41Z

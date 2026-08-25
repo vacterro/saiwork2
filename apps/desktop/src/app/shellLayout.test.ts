@@ -39,4 +39,32 @@ describe("shell layout contract (global.css)", () => {
     expect(dockHidden).toBeGreaterThanOrEqual(1);
     expect(css).not.toMatch(/\.dock-rail\s*\{\s*display:\s*none/);
   });
+
+  it("pins the UI.md Golden Default palette and orange-gold active accent", () => {
+    const expected = {
+      background: "#1A1810", backgroundSoft: "#232018", surface: "#332E22",
+      surfaceRaised: "#3D372A", surfaceAlt: "#453D30", borderDark: "#100E08",
+      borderHighlight: "#F0D060", bevelLight: "#75663D", borderMuted: "#5A5040",
+      textPrimary: "#D4C89A", textSecondary: "#9C9371", textMuted: "#6E674E",
+      accentTeal: "#008080", accentTealDeep: "#004C4C", success: "#4A7A20",
+      warning: "#7A7A20", danger: "#7A2020", dangerText: "#D66464",
+      selection: "#3D372A", compareBack: "#14120C", link: "#F0D060",
+    };
+    for (const [name, value] of Object.entries(expected)) {
+      expect(css).toContain(`--${name}:${value};`);
+    }
+    const visibleCss = css.replace(/--accentTeal(?:Deep)?:#[0-9A-F]{6};/g, "");
+    expect(visibleCss).not.toContain("var(--accentTeal)");
+    expect(visibleCss).toContain("var(--link)");
+  });
+
+  it("keeps UI.md motion/transparency rules and compact non-stacked tools", () => {
+    expect(css).not.toContain("color-mix(");
+    expect(css).not.toContain("@keyframes");
+    expect(css).not.toMatch(/\bopacity\s*:/);
+    expect(css).not.toMatch(/background:\s*(?:none|transparent)/);
+    expect(css).toContain("grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));");
+    expect(css).toContain("*::-webkit-scrollbar-thumb");
+    expect(css).toContain("scrollbar-color: var(--surfaceRaised) var(--backgroundSoft);");
+  });
 });

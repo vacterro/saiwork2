@@ -1,9 +1,10 @@
-// Settings-preset import (T-078): pick a preset file (.json — or .zip, which
-// is refused by the backend with a clear error) and apply it through the
-// backend authority. The UI never owns the DB (law 5); this module only picks
-// a path and delegates the parse/validate/apply to the `import_preset`
-// command. The ZIP-magic gate lives in saiwork-core — a ZIP must never reach
-// `JSON.parse`.
+// Settings-preset import (T-078): pick a preset file (.json) and apply it
+// through the backend authority. The UI never owns the DB (law 5); this
+// module only picks a path and delegates the parse/validate/apply to the
+// `import_preset` command. The ZIP-magic gate lives in saiwork-core as a
+// defensive fail-closed guard (AUDIT-CORE-007) — a ZIP must never reach
+// `JSON.parse` — but ZIP is NOT a supported selection: the picker advertises
+// JSON only so a user can never pick a file that is guaranteed to fail.
 
 import { commands } from "./backend";
 import { setFavorites } from "../state/store";
@@ -14,10 +15,10 @@ export interface PresetImportOutcome {
 }
 
 /**
- * Open the file picker filtered to preset files (.json / .zip). Returns
- * `null` only for the two legitimate cases (web-dev mode without the Tauri
- * dialog plugin, or a deliberate user Cancel); any other failure is surfaced
- * via `onError` (mirror of `pickFolder`, T-022).
+ * Open the file picker filtered to JSON preset files ONLY. Returns `null`
+ * only for the two legitimate cases (web-dev mode without the Tauri dialog
+ * plugin, or a deliberate user Cancel); any other failure is surfaced via
+ * `onError` (mirror of `pickFolder`, T-022).
  */
 export async function pickPresetFile(
   onError?: (message: string) => void,
@@ -29,7 +30,7 @@ export async function pickPresetFile(
     const { open } = await import("@tauri-apps/plugin-dialog");
     const selected = await open({
       multiple: false,
-      filters: [{ name: "SAIWORK2 preset", extensions: ["json", "zip"] }],
+      filters: [{ name: "SAIWORK2 preset", extensions: ["json"] }],
     });
     return typeof selected === "string" ? selected : null;
   } catch (e) {

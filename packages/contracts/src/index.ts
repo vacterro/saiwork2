@@ -285,10 +285,28 @@ export interface QueueItem {
   updated_at: number;
 }
 
+export interface QueueCounts {
+  queued: number;
+  leased: number;
+  dispatched: number;
+  done: number;
+  failed: number;
+  cancelled: number;
+  unknown: number;
+}
+
 export interface QueueSnapshot {
   status: QueueStatus;
   paused: boolean;
   items: QueueItem[];
+  /** Exact durable totals for every state; never inferred from this page. */
+  counts: QueueCounts;
+  /** Backend-normalized offset/limit for the active (non-terminal) page. */
+  active_offset: number;
+  active_limit: number;
+  /** Exact count of queued rows before this page, used for global reorder. */
+  queued_before: number;
+  active_has_more: boolean;
   /** True when items[].payload is a bounded preview; fetch the full item for editing. */
   payload_preview?: boolean;
 }

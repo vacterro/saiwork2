@@ -362,9 +362,10 @@ impl FakeEngine {
         let inner = self.inner.clone();
         let session_id: SessionId = req.session_id.clone().into();
         let run_id_typed: RunId = run_id.clone().into();
+        let model = req.model.clone();
         let label = scenario.label;
         let task = tokio::spawn(async move {
-            run_task(inner, ctx, session_id, run_id_typed, scenario, cancel_rx).await;
+            run_task(inner, ctx, session_id, run_id_typed, model, scenario, cancel_rx).await;
         });
         self.inner
             .tasks
@@ -510,6 +511,7 @@ async fn run_task(
     ctx: EngineStartContext,
     session_id: SessionId,
     run_id: RunId,
+    model: Option<String>,
     scenario: FakeScenario,
     cancel_rx: watch::Receiver<bool>,
 ) {
@@ -525,6 +527,7 @@ async fn run_task(
     rc.publish(Event::MessageStarted {
         session_id: session_id.clone(),
         run_id: run_id.clone(),
+        model,
     });
 
     match scenario.hostile {

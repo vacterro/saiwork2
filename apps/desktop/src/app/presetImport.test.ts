@@ -69,8 +69,10 @@ describe("runPresetImport (T-078)", () => {
     expect(onError).not.toHaveBeenCalled();
   });
 
-  it("surfaces a backend rejection (e.g. ZIP magic refusal) and rethrows", async () => {
-    openImpl = () => Promise.resolve("C:/presets/bundle.zip");
+  it("surfaces a backend rejection and rethrows (defensive ZIP-magic guard, AUDIT-CORE-007)", async () => {
+    // The picker no longer offers .zip, but the backend's fail-closed magic
+    // gate still protects against a mislabeled file or a direct invocation.
+    openImpl = () => Promise.resolve("C:/presets/mislabeled.json");
     importImpl = () =>
       Promise.reject(new Error("preset import error: the selected file is a ZIP archive"));
     const onError = vi.fn();
@@ -88,5 +90,22 @@ describe("runPresetImport (T-078)", () => {
     const outcome = await runPresetImport(onError);
     expect(outcome).toBeNull();
     expect(onError).toHaveBeenCalledWith(expect.stringContaining("Preset picker failed"));
+  });
+
+  it("advertises JSON ONLY in the picker filter (AUDIT-CORE-007)", async () => {
+    // The backend guarantees a ZIP can never import (fail-closed magic
+    // check); advertising `.zip` in the picker offered the user a
+    // guaranteed-to-fail selection. The filter must offer JSON only.
+    let captured: { filters?: { name: string; extensions: string[] }[] } | undefined;
+    openImpl = (opts) => {
+      captured = opts as typeof captured;
+      return Promise.resolve(null);
+    };
+    const onError = vi.fn();
+    const { pickPresetFile } = await importModule();
+    await pickPresetFile(onError);
+    expect(captured?.filters).toEqual([
+      { name: "SAIWORK2 preset", extensions: ["json"] },
+    ]);
   });
 });

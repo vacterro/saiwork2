@@ -696,16 +696,14 @@ impl App {
                 });
             }
         }
-        // In-memory active/unknown runs (also hydrates durable rows so the
-        // check covers restart state; storage failure fails closed).
-        for s in self.sessions.list(Some(id))? {
-            if s.running || s.unknown_run.is_some() {
-                return Err(CoreError::WorkspaceInUse {
-                    workspace_id: id.to_string(),
-                    reason: format!("session '{}' has an active or unknown run", s.id),
-                });
-            }
-        }
+        // AUDIT-W2-003: exclusive SessionManager reservation REPLACES the old
+        // racy snapshot scan. Acquired under the same session-map write lock
+        /// every send/maintenance reservation uses, it atomically proves the
+        /// workspace has no running/pending_send/unknown_run/maintenance
+        /// session AND blocks all new reservations for this workspace until
+        /// dropped — closing the TOCTOU window where a revert/unrevert or a
+        /// fresh send could start between an idle scan and the delete.
+        let _forget_guard = self.sessions.reserve_workspace_forget(id)?;
         // Nonterminal durable queue work referencing the workspace.
         if self.queue.workspace_has_nonterminal(id)? {
             return Err(CoreError::WorkspaceInUse {
@@ -800,7 +798,49 @@ impl App {
     /// Setting keys a preset file may write. Everything else is rejected
     /// (fail-closed): the generic `set_setting` surface enforces the same
     /// whitelist, and a preset must never bypass it (T-052 / law 5).
-    pub const PRESET_SETTING_KEYS: &[&str] = &["ui.layout.v1", "ui.engine.v1"];
+    pub const PRESET_SETTING_KEYS: &[&str] = Self::GENERIC_UI_SETTING_KEYS;
+
+    /// The only keys the desktop GENERIC settings IPC surface (read AND
+    /// write) may serve (AUDIT-CORE-004). Typed-owner/internal keys
+    /// (`core.active_workspace`, `queue.paused`, `ui.models.favorites`,
+    /// security-relevant `saipen.trusted_home`) stay behind their dedicated
+    /// commands/snapshots and must never leak through the generic path.
+    pub const GENERIC_UI_SETTING_KEYS: &[&str] = &["ui.layout.v1", "ui.engine.v1"];
+
+    /// Ownership guard for the generic settings read path.
+    pub fn ensure_generic_ui_setting(key: &str) -> Result<(), CoreError> {
+        if !Self::GENERIC_UI_SETTING_KEYS.contains(&key) {
+            return Err(CoreError::Config(format!(
+                "get_setting: '{key}' is not a generic UI preference (typed-owner state has its own commands/snapshots)"
+            )));
+        }
+        Ok(())
+    }
+
+    /// AUDIT-CORE-003: bound a preset FILESYSTEM READ at the IPC boundary.
+    /// Accumulates at most `MAX_PRESET_BYTES + 1` bytes so an enormous
+    /// picked file can never be fully allocated in the desktop process
+    /// before the size rejection runs. Metadata size is deliberately NOT
+    /// the authority: it can change between stat and read, so the sentinel
+    /// byte decides.
+    pub fn read_preset_capped(path: &str) -> Result<Vec<u8>, CoreError> {
+        use std::io::Read;
+        let mut file = std::fs::File::open(path).map_err(|e| {
+            CoreError::PresetImport(format!("preset file open failed: {e}"))
+        })?;
+        let cap = Self::MAX_PRESET_BYTES;
+        let mut buf = Vec::with_capacity(64 * 1024);
+        file.take((cap + 1) as u64)
+            .read_to_end(&mut buf)
+            .map_err(|e| CoreError::PresetImport(format!("preset file read failed: {e}")))?;
+        if buf.len() > cap {
+            return Err(CoreError::PresetImport(format!(
+                "preset file exceeds the {} byte limit",
+                cap
+            )));
+        }
+        Ok(buf)
+    }
 
     /// Apply a durable-UI settings preset read from a user-picked file.
     ///
@@ -835,7 +875,13 @@ impl App {
             CoreError::PresetImport("preset must be a JSON object".into())
         })?;
 
-        let mut settings_applied = 0;
+        // AUDIT-CORE-002: validate and normalize the WHOLE preset before any
+        // durable write. A reported failed import must leave settings AND
+        // favorites byte-for-byte unchanged (fail-closed whole-preset
+        // contract); committing per-key inside the loop let an invalid later
+        // field survive partial earlier writes.
+        let mut batch: Vec<(String, String)> = Vec::new();
+        let mut settings_applied = 0usize;
         if let Some(settings) = obj.get("settings") {
             let map = settings.as_object().ok_or_else(|| {
                 CoreError::PresetImport("preset 'settings' must be an object".into())
@@ -851,12 +897,12 @@ impl App {
                         "preset setting '{key}' must be a string"
                     ))
                 })?;
-                self.db.set_setting(key, text)?;
+                batch.push((key.clone(), text.to_string()));
                 settings_applied += 1;
             }
         }
 
-        let mut favorites_applied = 0;
+        let mut favorites_applied = 0usize;
         if let Some(favorites) = obj.get("favorites") {
             let list = favorites.as_array().ok_or_else(|| {
                 CoreError::PresetImport("preset 'favorites' must be an array of model ids".into())
@@ -868,9 +914,18 @@ impl App {
                 })?;
                 ids.push(id.to_string());
             }
-            self.set_model_favorites(&ids)?;
-            favorites_applied = normalize_favorites(&ids).len();
+            let capped = normalize_favorites(&ids);
+            favorites_applied = capped.len();
+            batch.push((
+                Self::SETTING_MODEL_FAVORITES.to_string(),
+                serialize_favorites(&capped),
+            ));
         }
+
+        // Single atomic commit: all keys land together or not at all.
+        let refs: Vec<(&str, &str)> =
+            batch.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
+        self.db.set_settings_batch(&refs)?;
 
         Ok(PresetImportSummary {
             settings_applied,
@@ -1075,7 +1130,13 @@ impl App {
 
         // Phase 5: engines stop (cancel runs, release pending permissions).
         // The queue coordinator drains the resulting run terminals.
-        self.engines.stop_all().await;
+        let engine_stop_failures = self.engines.stop_all().await;
+        warnings.extend(engine_stop_failures.into_iter().map(|failure| {
+            format!(
+                "engine '{}' did not stop cleanly: {}",
+                failure.engine_id, failure.message
+            )
+        }));
 
         // Phase 6: join the queue worker, then release any remaining safe
         // leases (LEASED-prepare) before storage closes.
@@ -1189,7 +1250,10 @@ impl App {
             supervisor_active: self.supervisor.count(),
             processes: self.supervisor.snapshots(),
             workspaces: self.db.workspace_count().unwrap_or(0),
-            sessions: self.sessions.list(None).map(|v| v.len()).unwrap_or(0),
+            // AUDIT-PERF-001: an exact durable COUNT(*) — never a full
+            // session hydration/sort merely to report one integer, and no
+            // session-cache mutation.
+            sessions: self.db.session_count().unwrap_or(0) as usize,
             recent_errors: self.diagnostics.recent_errors(),
             event_subscribers: self.bus.subscriber_count(),
             log_dir: logging.log_dir.as_ref().map(|p| p.display().to_string()),
@@ -1480,6 +1544,104 @@ mod tests {
     }
 
     #[test]
+    fn preset_import_is_atomic_invalid_later_field_writes_nothing() {
+        // AUDIT-CORE-002 regression: a valid setting followed by an INVALID
+        // favorites field must reject the whole preset AND leave durable
+        // state byte-for-byte unchanged — the old loop committed each
+        // setting before favorites were ever validated.
+        let dir = tempfile::tempdir().unwrap();
+        let config = AppConfig {
+            data_root: dir.path().join("data"),
+            portable: true,
+        };
+        config.ensure_layout().unwrap();
+        let db = Db::open(&config.database_path()).unwrap();
+        let app = App::construct_booting(config, db);
+
+        // Pre-existing durable state the failed import must not disturb.
+        app.db.set_setting("ui.layout.v1", "preexisting").unwrap();
+        app.set_model_favorites(&["keep/provider".to_string()]).unwrap();
+
+        let preset = br#"{
+            "settings": { "ui.layout.v1": "{\"tabs\":[]}" },
+            "favorites": ["a/provider", 42]
+        }"#;
+        let err = app.import_preset(preset).unwrap_err();
+        assert!(err.to_string().contains("only strings"), "got: {err}");
+
+        // Both domains unchanged.
+        assert_eq!(app.db.get_setting("ui.layout.v1").unwrap(), Some("preexisting".into()));
+        assert_eq!(app.model_favorites().unwrap(), vec!["keep/provider".to_string()]);
+    }
+
+    #[test]
+    fn preset_import_oversized_value_commits_nothing() {
+        // A value that passes core validation but exceeds the storage
+        // per-key bound must fail the WHOLE batch inside the transaction —
+        // no earlier key of the same preset may survive.
+        let dir = tempfile::tempdir().unwrap();
+        let config = AppConfig {
+            data_root: dir.path().join("data"),
+            portable: true,
+        };
+        config.ensure_layout().unwrap();
+        let db = Db::open(&config.database_path()).unwrap();
+        let app = App::construct_booting(config, db);
+        app.db.set_setting("ui.engine.v1", "preexisting").unwrap();
+
+        let big = "x".repeat(saiwork_storage::MAX_SETTING_VALUE_BYTES + 1);
+        let preset = format!(
+            r#"{{ "settings": {{ "ui.layout.v1": "{{\"v\":1}}", "ui.engine.v1": "{big}" }} }}"#
+        );
+        assert!(app.import_preset(preset.as_bytes()).is_err());
+        // Neither key of the rejected batch landed; preexisting value intact.
+        assert_eq!(app.db.get_setting("ui.engine.v1").unwrap(), Some("preexisting".into()));
+        assert_eq!(app.db.get_setting("ui.layout.v1").unwrap(), None);
+    }
+
+    #[test]
+    fn preset_read_is_bounded_at_the_ipc_boundary() {
+        // AUDIT-CORE-003: an oversized picked file must never be fully
+        // allocated before the size rejection runs — the read stops at
+        // cap+1 sentinel bytes and reports the same limit error.
+        let dir = tempfile::tempdir().unwrap();
+        let cap = App::MAX_PRESET_BYTES;
+
+        let big_path = dir.path().join("big.json");
+        std::fs::write(&big_path, vec![b'x'; cap + 4096]).unwrap();
+        let err = App::read_preset_capped(big_path.to_str().unwrap()).unwrap_err();
+        assert!(err.to_string().contains("byte limit"), "got: {err}");
+
+        // Exactly-at-cap remains accepted for normal core validation;
+        // cap+1 is the smallest rejected read.
+        let at_cap = dir.path().join("at.json");
+        std::fs::write(&at_cap, vec![b' '; cap]).unwrap();
+        assert_eq!(
+            App::read_preset_capped(at_cap.to_str().unwrap()).unwrap().len(),
+            cap
+        );
+    }
+
+    #[test]
+    fn generic_setting_reads_reject_typed_owner_and_unknown_keys() {
+        // AUDIT-CORE-004: generic UI prefs stay readable; typed-owner,
+        // internal, security-relevant, unknown and empty keys are not.
+        for key in ["ui.layout.v1", "ui.engine.v1"] {
+            assert!(App::ensure_generic_ui_setting(key).is_ok(), "{key}");
+        }
+        for key in [
+            "core.active_workspace",
+            "queue.paused",
+            "ui.models.favorites",
+            "saipen.trusted_home",
+            "unknown.key.v9",
+            "",
+        ] {
+            assert!(App::ensure_generic_ui_setting(key).is_err(), "{key:?} must be rejected");
+        }
+    }
+
+    #[test]
     fn preset_import_rejects_non_object_and_oversized() {
         let dir = tempfile::tempdir().unwrap();
         let config = AppConfig {
@@ -1549,6 +1711,7 @@ mod tests {
         entered: std::sync::atomic::AtomicBool,
         stop_calls: std::sync::atomic::AtomicUsize,
         release: Arc<tokio::sync::Notify>,
+        stop_failure: Option<&'static str>,
     }
     #[async_trait]
     impl crate::engine::EngineAdapter for BlockingStopEngine {
@@ -1577,6 +1740,9 @@ mod tests {
             self.entered
                 .store(true, std::sync::atomic::Ordering::SeqCst);
             self.release.notified().await;
+            if let Some(message) = self.stop_failure {
+                return Err(crate::engine::EngineError::engine(&self.id, message));
+            }
             self.stopped
                 .store(true, std::sync::atomic::Ordering::SeqCst);
             Ok(())
@@ -1658,6 +1824,7 @@ mod tests {
             entered: std::sync::atomic::AtomicBool::new(false),
             stop_calls: std::sync::atomic::AtomicUsize::new(0),
             release: release.clone(),
+            stop_failure: None,
         });
         // Start the runtime so stop_all actually calls into it.
         let ctx = crate::engine::EngineStartContext {
@@ -1712,6 +1879,35 @@ mod tests {
             1,
             "cleanup must have run exactly once"
         );
+    }
+
+    #[tokio::test]
+    async fn shutdown_report_includes_named_engine_stop_failure() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = AppConfig {
+            data_root: dir.path().join("data"),
+            portable: true,
+        };
+        let app = App::bootstrap_with(config).unwrap();
+        let release = Arc::new(tokio::sync::Notify::new());
+        release.notify_one();
+        let engine = Arc::new(BlockingStopEngine {
+            id: "broken-stop".into(),
+            stopped: std::sync::atomic::AtomicBool::new(false),
+            entered: std::sync::atomic::AtomicBool::new(false),
+            stop_calls: std::sync::atomic::AtomicUsize::new(0),
+            release,
+            stop_failure: Some("adapter cleanup failed"),
+        });
+        app.engines.register(engine);
+
+        let report = app.shutdown("engine stop failure").await;
+
+        assert_eq!(report.outcome, "completed_with_warnings");
+        assert!(report.warnings.iter().any(|warning| {
+            warning.contains("broken-stop") && warning.contains("adapter cleanup failed")
+        }));
+        assert_eq!(app.state(), AppState::Stopped);
     }
 
     /// Bootstrap rollback leaves zero background ownership (TASK 24 §9): the

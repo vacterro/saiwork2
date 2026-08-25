@@ -125,7 +125,9 @@ TerminationTimeout · ShuttingDown (spawn rejected after shutdown started)
 3. cancel app-owned background operations (incl. SAIPEN actions: reject new,
    request safe cancellation, bounded wait, force fallback — TASK 15 §67)
 4. flush durable state
-5. gracefully stop engines (queue coordinator observes run terminals)
+5. gracefully stop engines (queue coordinator observes run terminals); each
+   adapter stop has a 15 s registry deadline, after which shutdown records a
+   warning and proceeds to the supervisor force sweep
 6. supervisor.shutdown(): graceful stop → bounded concurrent force proof →
    discard proven exits; retain any live survivor records for teardown retry
 7. queue finish_shutdown: bounded join of dispatcher/coordinator; leftover

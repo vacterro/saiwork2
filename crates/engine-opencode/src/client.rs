@@ -366,24 +366,25 @@ impl ApiClient {
 
     pub(crate) async fn reply_permission(
         &self,
-        session_id: &str,
+        _session_id: &str,
         request_id: &str,
         allowed: bool,
     ) -> Result<(), OpenCodeError> {
+        let reply = if allowed { "once" } else { "reject" };
         let resp = self
             .auth(self.inner.post(self.url(&format!(
-                "/session/{session_id}/permission/{request_id}/reply"
+                "/permission/{request_id}/reply"
             ))))
             .header("content-type", "application/json")
-            .body(format!("{{\"allowed\":{allowed}}}"))
+            .body(serde_json::json!({ "reply": reply }).to_string())
             .timeout(self.metadata_timeout)
             .send()
             .await
             .map_err(transport_error("reply permission"))?;
         match resp.status() {
             status if status.is_success() => Ok(()),
-            reqwest::StatusCode::NOT_FOUND => Err(OpenCodeError::SessionNotFound {
-                session_id: session_id.to_string(),
+            reqwest::StatusCode::NOT_FOUND => Err(OpenCodeError::RequestFailed {
+                detail: format!("permission request '{request_id}' was not found"),
             }),
             status => Err(http_error(status, "reply permission", "")),
         }
@@ -394,14 +395,14 @@ impl ApiClient {
     /// a single-selection answer maps to a one-element inner array).
     pub(crate) async fn reply_question(
         &self,
-        session_id: &str,
+        _session_id: &str,
         request_id: &str,
         answers: &[Vec<String>],
     ) -> Result<(), OpenCodeError> {
         let body = serde_json::json!({ "answers": answers }).to_string();
         let resp = self
             .auth(self.inner.post(self.url(&format!(
-                "/session/{session_id}/question/{request_id}/reply"
+                "/question/{request_id}/reply"
             ))))
             .header("content-type", "application/json")
             .body(body)
@@ -411,8 +412,8 @@ impl ApiClient {
             .map_err(transport_error("reply question"))?;
         match resp.status() {
             status if status.is_success() => Ok(()),
-            reqwest::StatusCode::NOT_FOUND => Err(OpenCodeError::SessionNotFound {
-                session_id: session_id.to_string(),
+            reqwest::StatusCode::NOT_FOUND => Err(OpenCodeError::RequestFailed {
+                detail: format!("question request '{request_id}' was not found"),
             }),
             status => Err(http_error(status, "reply question", "")),
         }
@@ -421,12 +422,12 @@ impl ApiClient {
     /// AUDIT-CORE-002: authoritatively reject a pending user question.
     pub(crate) async fn reject_question(
         &self,
-        session_id: &str,
+        _session_id: &str,
         request_id: &str,
     ) -> Result<(), OpenCodeError> {
         let resp = self
             .auth(self.inner.post(self.url(&format!(
-                "/session/{session_id}/question/{request_id}/reject"
+                "/question/{request_id}/reject"
             ))))
             .timeout(self.metadata_timeout)
             .send()
@@ -434,8 +435,8 @@ impl ApiClient {
             .map_err(transport_error("reject question"))?;
         match resp.status() {
             status if status.is_success() => Ok(()),
-            reqwest::StatusCode::NOT_FOUND => Err(OpenCodeError::SessionNotFound {
-                session_id: session_id.to_string(),
+            reqwest::StatusCode::NOT_FOUND => Err(OpenCodeError::RequestFailed {
+                detail: format!("question request '{request_id}' was not found"),
             }),
             status => Err(http_error(status, "reject question", "")),
         }

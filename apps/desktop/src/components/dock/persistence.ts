@@ -23,12 +23,90 @@ function clampWidth(w: number): number {
   return Math.max(DOCK_MIN_WIDTH, Math.min(DOCK_MAX_WIDTH, Math.round(w)));
 }
 
+export interface DockDragStart {
+  x: number;
+  w: number;
+}
+
+/**
+ * AUDIT-PERF-005: live-width frame coalescer for the dock resizer.
+ *
+ * Pointer-rate events only retain their newest clientX; at most ONE width
+ * commit runs per animation frame. `end()` is the ownership boundary: it
+ * cancels any pending frame and commits the FINAL released position
+ * synchronously (never an earlier frame's value). Frame scheduling is
+ * injectable so tests can drive it deterministically; production defaults
+ * to requestAnimationFrame and are resolved LAZILY (this module also loads
+ * under node-side vitest).
+ */
+export function createDockResizeCoalescer(frame?: {
+  raf?: (cb: () => void) => number;
+  caf?: (handle: number) => void;
+}): {
+  move(start: DockDragStart | null, clientX: number, commit: (w: number) => void): boolean;
+  end(
+    start: DockDragStart | null,
+    clientX: number,
+    commit: (w: number) => void,
+  ): boolean;
+  cancel(): void;
+} {
+  // Frame primitives resolved LAZILY per call so the factory is safe to
+  // construct under node-side vitest (no window there).
+  const raf = (cb: () => void): number =>
+    frame?.raf ? frame.raf(cb) : requestAnimationFrame(cb);
+  const caf = (handle: number): void =>
+    frame?.caf ? frame.caf(handle) : cancelAnimationFrame(handle);
+  let pending: number | null = null;
+  let latestX: number | null = null;
+  return {
+    move(start, clientX, commit) {
+      if (!start) return false;
+      latestX = clientX;
+      if (pending == null) {
+        pending = raf(() => {
+          pending = null;
+          const x = latestX;
+          latestX = null;
+          if (x == null) return;
+          commit(start.w + (start.x - x));
+        });
+      }
+      return true;
+    },
+    end(start, clientX, commit) {
+      if (pending != null) {
+        caf(pending);
+        pending = null;
+      }
+      latestX = null;
+      if (!start) return false;
+      commit(start.w + (start.x - clientX));
+      return true;
+    },
+    cancel() {
+      if (pending != null) caf(pending);
+      pending = null;
+      latestX = null;
+    },
+  };
+}
+
 export function setDockWidth(width: number): void {
   // PERF-003: live geometry only. Durability is a discrete commit, not a
   // pointer-rate stream — `persistUiLayout` is called once at drag end (see
   // Dock.onResizeStart) so a fast drag does not fire a SQLite write per pixel.
+  //
+  // AUDIT-PERF-005: semantic no-op when the CLAMPED width did not change.
+  // Pointer events beyond the min/max rails (or sub-pixel jitter within one
+  // rounded px) must not notify every Store subscriber with an identical
+  // global state. The generation STILL advances: a mutation attempt is
+  // proof of local recency for `loadUiLayout`, even when the value is equal.
   layoutGen++;
-  store.patch((s) => ({ ...s, dockWidth: clampWidth(width) }));
+  const clamped = clampWidth(width);
+  if (clamped !== store.getState().dockWidth) {
+    store.patch((s) => ({ ...s, dockWidth: clamped }));
+  }
 }
 
 export function toggleDockCollapsed(): void {

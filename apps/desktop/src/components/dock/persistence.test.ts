@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { store } from "../../state/store";
 import {
+  createDockResizeCoalescer,
   loadUiLayout,
   persistUiLayout,
   setDockWidth,
@@ -95,5 +96,81 @@ describe("dock persistence", () => {
     setEnterQueues(true);
     expect(store.getState().enterQueues).toBe(true);
     expect(setSetting).toHaveBeenCalled();
+  });
+
+  it("setDockWidth is a semantic NO-OP when the clamped width is unchanged (AUDIT-PERF-005)", () => {
+    store.patch((s) => ({ ...s, dockWidth: 400 }));
+    let notifications = 0;
+    const unsub = store.subscribe(() => notifications++);
+    // Hundreds of identical movements: zero Store commits.
+    for (let i = 0; i < 200; i++) setDockWidth(400);
+    expect(notifications).toBe(0);
+    // A real change commits exactly once…
+    setDockWidth(401.4); // rounds to 401
+    expect(notifications).toBe(1);
+    expect(store.getState().dockWidth).toBe(401);
+    // …and a drag PAST the max rail commits only the first clamped landing;
+    // every identical clamped movement afterwards is a no-op.
+    for (let i = 0; i < 200; i++) setDockWidth(DOCK_MAX_WIDTH + 100 + i);
+    expect(notifications).toBe(2);
+    expect(store.getState().dockWidth).toBe(DOCK_MAX_WIDTH);
+    unsub();
+  });
+});
+
+describe("dock resize frame coalescing (AUDIT-PERF-005)", () => {
+  function harness() {
+    const queue: Array<() => void> = [];
+    let cancelled = 0;
+    const coalescer = createDockResizeCoalescer({
+      raf: (cb) => {
+        queue.push(cb);
+        return queue.length;
+      },
+      caf: () => {
+        cancelled += 1;
+      },
+    });
+    return { coalescer, queue, cancelledCount: () => cancelled };
+  }
+
+  it("hundreds of pointermoves inside one frame commit at most once", () => {
+    const { coalescer, queue } = harness();
+    const commits: number[] = [];
+    const start = { x: 100, w: 360 };
+    // Dragging LEFT (clientX shrinks) grows the width; newest coordinate wins.
+    for (let i = 0; i < 300; i++) {
+      coalescer.move(start, 100 - i, (w) => commits.push(w));
+    }
+    expect(queue.length).toBe(1); // exactly one frame scheduled
+    queue[0]!();
+    expect(commits).toEqual([360 + 299]); // newest coordinate wins
+    // A second burst schedules exactly one more frame.
+    for (let i = 0; i < 300; i++) {
+      coalescer.move(start, 90 - i, (w) => commits.push(w));
+    }
+    expect(queue.length).toBe(2);
+  });
+
+  it("end() cancels the pending frame and commits the FINAL released position", () => {
+    const { coalescer, queue, cancelledCount } = harness();
+    const start = { x: 100, w: 360 };
+    const commits: number[] = [];
+    coalescer.move(start, 80, (w) => commits.push(w)); // frame pending
+    coalescer.end(start, 60, (w) => commits.push(w));
+    expect(cancelledCount()).toBe(1); // pending frame must be cancelled
+    expect(commits).toEqual([360 + 40]); // final released width is the authority
+    // The cancelled frame never fires a stale commit.
+    for (const cb of queue) cb();
+    expect(commits).toHaveLength(1);
+  });
+
+  it("cancel()/no-drag boundaries are inert and leak nothing", () => {
+    const { coalescer } = harness();
+    const commits: number[] = [];
+    expect(coalescer.move(null, 10, (w) => commits.push(w))).toBe(false);
+    expect(coalescer.end(null, 10, (w) => commits.push(w))).toBe(false);
+    coalescer.cancel(); // no pending frame: no caf call, no throw
+    expect(commits).toEqual([]);
   });
 });

@@ -142,11 +142,42 @@ pub struct SessionManager {
     /// sessions: usable only while this equals the CURRENT engine
     /// generation (TASK 24 §9).
     session_generations: RwLock<HashMap<String, u64>>,
+    /// AUDIT-W2-003: workspaces currently being forgotten, under the SAME
+    /// session-map authority as send/maintenance reservations. While a
+    /// workspace is marked here, no new create/send/maintenance reservation
+    /// may start for it; the forget holder keeps the mark across the durable
+    /// delete and the live-projection removal, closing the TOCTOU window the
+    /// old pre-delete snapshot scan left open.
+    forgetting: std::sync::Mutex<HashSet<String>>,
+}
+
+/// AUDIT-W2-003: RAII ownership of a workspace-forget reservation. Drop
+/// releases the mark (also on early error returns / panics); the forget path
+/// keeps it held through live-projection removal.
+#[derive(Debug)]
+pub(crate) struct WorkspaceForgetGuard<'a> {
+    forgetting: &'a std::sync::Mutex<HashSet<String>>,
+    workspace_id: String,
+}
+
+impl Drop for WorkspaceForgetGuard<'_> {
+    fn drop(&mut self) {
+        self.forgetting
+            .lock()
+            .expect("forgetting set mutex poisoned")
+            .remove(&self.workspace_id);
+    }
 }
 
 struct MaintenanceGuard<'a> {
     sessions: &'a RwLock<HashMap<String, Session>>,
     session_id: String,
+}
+
+impl std::fmt::Debug for MaintenanceGuard<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("MaintenanceGuard").field("session_id", &self.session_id).finish()
+    }
 }
 
 impl Drop for MaintenanceGuard<'_> {
@@ -171,6 +202,7 @@ impl SessionManager {
             sessions: RwLock::new(HashMap::new()),
             validated: RwLock::new(HashSet::new()),
             session_generations: RwLock::new(HashMap::new()),
+            forgetting: std::sync::Mutex::new(HashSet::new()),
         }
     }
 
@@ -263,17 +295,18 @@ impl SessionManager {
         let now = now_ms();
         // T-081: new sessions are named `<projectname>_<DD-MM-YYTHH:MM:SS>`.
         // The engine's generic title (often a session id) is meaningless to
-        // the user; the workspace name + local timestamp is readable and
-        // collision-free. The durable row and the returned Session both carry
-        // it, so ThreadTabs/SessionList show the human name without a rename
-        // pass. `workspace_id` is validated above (binding lease), so a
-        // workspace name is derivable from the durable row when present.
+        // the user; the workspace name + UTC timestamp (AUDIT-CORE-006) is
+        // readable and collision-free. The durable row and the returned
+        // Session both carry it, so ThreadTabs/SessionList show the human
+        // name without a rename pass. `workspace_id` is validated above
+        // (binding lease), so a workspace name is derivable from the durable
+        // row when present.
         let project_name = workspace_id
             .map(|wid| self.db.get_workspace(wid).ok().flatten())
             .flatten()
             .map(|w| w.name)
             .unwrap_or_else(|| engine_id.to_string());
-        let display_name = format!("{project_name}_{}", local_timestamp_for_name(now));
+        let display_name = format!("{project_name}_{}", utc_timestamp_for_name(now));
         // Resumability is supplied by the ADAPTER, never hardcoded (TASK 24
         // §9): an engine that declares `resume=false` (e.g. Harness) owns
         // connection-scoped sessions that die with its runtime, so the
@@ -521,6 +554,14 @@ impl SessionManager {
             {
                 return Err(CoreError::SessionBusy { session_id: session_id.into() });
             }
+            // AUDIT-W2-003: a Forget owning this workspace excludes new
+            // maintenance — exactly one ownership transition may win.
+            if self.workspace_being_forgotten(target.workspace_id.as_deref()) {
+                return Err(CoreError::WorkspaceInUse {
+                    workspace_id: target.workspace_id.clone().unwrap_or_default(),
+                    reason: "the workspace is being forgotten".into(),
+                });
+            }
             if let Some((active_session, workspace)) = workspace_has_active_run_locked(&map, &target) {
                 return Err(CoreError::WorkspaceBusy {
                     workspace_id: workspace,
@@ -532,6 +573,67 @@ impl SessionManager {
             target
         };
         Ok((session, MaintenanceGuard { sessions: &self.sessions, session_id: session_id.into() }))
+    }
+
+    /// AUDIT-W2-003: atomically prove the workspace owns NO live session
+    /// activity (running / unknown_run / pending_send / maintenance) and mark
+    /// it as being forgotten — under the SAME session-map write lock every
+    /// send/maintenance reservation uses. While the returned guard exists,
+    /// `send_acceptance` and `reserve_maintenance` reject this workspace, so
+    /// Forget can hold exclusive ownership across the durable delete and the
+    /// live-projection removal without a TOCTOU window. A pre-delete scan
+    /// alone was insufficient: new work could legally start between the scan
+    /// and the deletion.
+    pub(crate) fn reserve_workspace_forget(
+        &self,
+        workspace_id: &str,
+    ) -> Result<WorkspaceForgetGuard<'_>, CoreError> {
+        let mut map = self.sessions.write().expect("session map mutex poisoned");
+        {
+            let mut forgetting = self.forgetting.lock().expect("forgetting set mutex poisoned");
+            if !forgetting.insert(workspace_id.to_string()) {
+                return Err(CoreError::WorkspaceInUse {
+                    workspace_id: workspace_id.to_string(),
+                    reason: "another forget of this workspace is already in progress".into(),
+                });
+            }
+        }
+        for s in map
+            .values()
+            .filter(|s| s.workspace_id.as_deref() == Some(workspace_id))
+        {
+            if s.running || s.unknown_run.is_some() || s.pending_send || s.maintenance {
+                self.forgetting
+                    .lock()
+                    .expect("forgetting set mutex poisoned")
+                    .remove(workspace_id);
+                return Err(CoreError::WorkspaceInUse {
+                    workspace_id: workspace_id.to_string(),
+                    reason: format!(
+                        "session '{}' has an active run or maintenance operation",
+                        s.id
+                    ),
+                });
+            }
+        }
+        Ok(WorkspaceForgetGuard {
+            forgetting: &self.forgetting,
+            workspace_id: workspace_id.to_string(),
+        })
+    }
+
+    /// AUDIT-W2-003: true when a Forget currently owns this workspace. Called
+    /// under the session-map lock from every live-activity reservation so a
+    /// racing Forget can never lose against a newly started send/maintenance.
+    fn workspace_being_forgotten(&self, workspace_id: Option<&str>) -> bool {
+        match workspace_id {
+            None => false,
+            Some(ws) => self
+                .forgetting
+                .lock()
+                .expect("forgetting set mutex poisoned")
+                .contains(ws),
+        }
     }
 
     /// Reject a create/send whose workspace differs from the workspace the
@@ -746,6 +848,14 @@ impl SessionManager {
                     workspace_id: workspace,
                     active_session_id: active_session,
                     attempted_session_id: current.id.clone(),
+                });
+            }
+            // AUDIT-W2-003: Forget owns this workspace — no new send may
+            // start (the reservation mark was taken under this same lock).
+            if self.workspace_being_forgotten(current.workspace_id.as_deref()) {
+                return Err(CoreError::WorkspaceInUse {
+                    workspace_id: current.workspace_id.clone().unwrap_or_default(),
+                    reason: "the workspace is being forgotten".into(),
                 });
             }
             if let Some(s) = map.get_mut(session_id) {
@@ -1096,6 +1206,11 @@ impl SessionManager {
     /// and the durable deletion (session rows + workspace row) in one atomic
     /// storage transaction; this only reconciles the live projection AFTER the
     /// durable commit so a failed durable step never strands a live-only entry.
+    /// Remove every live session of one workspace from the in-memory
+    /// projections (Forget tail). Caller must hold the workspace-forget
+    /// reservation (AUDIT-W2-003): the workspace must have NO running /
+    /// unknown / pending_send / MAINTENANCE session and no new reservation
+    /// may start for it while this runs.
     pub fn drop_workspace_sessions(&self, workspace_id: &str) {
         let mut map = self.sessions.write().expect("session map mutex poisoned");
         let doomed: Vec<String> = map
@@ -1154,22 +1269,75 @@ impl SessionManager {
         Ok(out)
     }
 
-    /// Bounded recent-session projection (PERF-003). Identical to `list` but
-    /// the returned `Vec<Session>` is capped at `limit` of the most-recent
-    /// sessions (the list is already sorted `created_at` desc, so truncation
-    /// keeps the newest). Used by the frontend `list_sessions` IPC so a
-    /// workspace with an unbounded session history can never materialize the
-    /// whole set into one outgoing `Vec` (no unbounded anything,
-    /// §ARCHITECTURE). Internal callers that must observe EVERY session — e.g.
-    /// `forget_workspace`'s active-run scan — keep using the unbounded `list`.
+    /// Bounded recent-session projection (PERF-003, AUDIT-PERF-001). The
+    /// storage layer returns ONLY the newest `limit` durable rows
+    /// (`ORDER BY created_at DESC LIMIT ?`, index-planned): no full-history
+    /// materialization, sort-then-truncate, or mass hydration of idle
+    /// historical rows into the long-lived map.
+    ///
+    /// AUDIT-W2-007: "recent" and "currently active" are not equivalent
+    /// sets. A session carrying live/actionable ownership (running,
+    /// unknown_run, pending_send, maintenance, active_run) for the requested
+    /// scope is ALWAYS included even when durable recency places it outside
+    /// the newest `limit` rows — otherwise Cancel/Send gating would lose its
+    /// owner behind the cap. Deduplicated against the recent page; the
+    /// result may therefore exceed `limit` only by such live owners.
     pub fn list_recent(
         &self,
         workspace_id: Option<&str>,
         limit: usize,
     ) -> Result<Vec<Session>, CoreError> {
-        let mut out = self.list(workspace_id)?;
-        out.truncate(limit);
+        let rows = self.db.list_recent_session_meta(workspace_id, limit)?;
+        let mut out: Vec<Session> = Vec::with_capacity(rows.len() + 4);
+        let mut seen: std::collections::HashSet<String> =
+            std::collections::HashSet::with_capacity(rows.len());
+        {
+            let map = self.sessions.read().expect("session map mutex poisoned");
+            for row in &rows {
+                seen.insert(row.id.clone());
+                match map.get(&row.id) {
+                    Some(live) => out.push(live.clone()),
+                    None => out.push(self.row_to_session(row)),
+                }
+            }
+            for s in map.values() {
+                if seen.contains(&s.id)
+                    || !workspace_id.is_none_or(|w| s.workspace_id.as_deref() == Some(w))
+                {
+                    continue;
+                }
+                if !Self::is_live_owner(s) {
+                    continue;
+                }
+                out.push(s.clone());
+            }
+        }
+        // Restart hydration of REQUESTED rows only: everything this page
+        // made visible stays resolvable via `get()` without re-hydrating
+        // lifetime history (the old unbounded `list` populated every idle
+        // historical row here — that was the defect).
+        if out.len() > 0 {
+            let mut map = self.sessions.write().expect("session map mutex poisoned");
+            for s in &out {
+                map.entry(s.id.clone()).or_insert_with(|| s.clone());
+            }
+        }
+        for s in &mut out {
+            s.usable_now = self.usable_now(s);
+        }
+        out.sort_by_key(|s| std::cmp::Reverse(s.created_at));
         Ok(out)
+    }
+
+    /// True when the session currently owns work a user must be able to see
+    /// and act on (cancel / resolve unknown / wait), regardless of where the
+    /// durable recency ordering placed it.
+    fn is_live_owner(s: &Session) -> bool {
+        s.running
+            || s.unknown_run.is_some()
+            || s.active_run.is_some()
+            || s.pending_send
+            || s.maintenance
     }
 
     /// Hydrate an in-memory `Session` from a durable row. Non-resumable rows
@@ -1520,18 +1688,21 @@ fn now_ms() -> i64 {
         .unwrap_or(0)
 }
 
-/// Local timestamp in `DD-MM-YYTHH:MM:SS` format (T-081 session naming).
-/// Uses a deterministic local-time breakdown (no `chrono` dependency); the
-/// minute/second precision is what makes sibling sessions distinguishable.
-fn local_timestamp_for_name(ms: i64) -> String {
+/// Session-name timestamp in `DD-MM-YYTHH:MM:SS` format (T-081 session
+/// naming). AUDIT-CORE-006: this is explicitly **UTC** civil time — the
+/// breakdown below has no timezone database and must not masquerade as wall-
+/// clock local time (non-UTC users previously saw silently shifted names).
+/// The minute/second precision is what keeps sibling sessions distinguishable;
+/// determinism beats locale here, so the contract is honest UTC everywhere.
+fn utc_timestamp_for_name(ms: i64) -> String {
     let s = (ms / 1000).max(0) as u64;
-    let (year, month, day, hour, min, sec) = local_time_breakdown(s);
+    let (year, month, day, hour, min, sec) = utc_time_breakdown(s);
     format!("{:02}-{:02}-{:02}T{:02}:{:02}:{:02}", day, month, year % 100, hour, min, sec)
 }
 
-/// Minimal local-time breakdown (no `chrono` dependency). Deterministic for
-/// timestamps after 1970.
-fn local_time_breakdown(unix_secs: u64) -> (i32, u32, u32, u32, u32, u32) {
+/// Minimal UTC civil-time breakdown (no `chrono`/tz dependency). Deterministic
+/// for timestamps after 1970. Named for what it IS (AUDIT-CORE-006).
+fn utc_time_breakdown(unix_secs: u64) -> (i32, u32, u32, u32, u32, u32) {
     let days = unix_secs / 86400;
     let time_secs = unix_secs % 86400;
     let hour = (time_secs / 3600) as u32;
@@ -1747,6 +1918,18 @@ mod tests {
         .unwrap();
     }
 
+    /// AUDIT-CORE-006: the session-name timestamp is explicitly UTC civil
+    /// time — fixed instants map to fixed strings regardless of host
+    /// timezone/DST (the old "local" name was silently shifted UTC).
+    #[test]
+    fn session_name_timestamp_is_explicit_utc() {
+        // 2026-01-01T00:00:00Z
+        assert_eq!(utc_timestamp_for_name(1767225600000), "01-01-26T00:00:00");
+        // 2026-07-01T12:34:56Z — DST-active across most northern locales;
+        // the contract stays the same instant-derived string everywhere.
+        assert_eq!(utc_timestamp_for_name(1782909296000), "01-07-26T12:34:56");
+    }
+
     /// T-081: a new session is named `<projectname>_<DD-MM-YYTHH:MM:SS>` —
     /// readable and collision-free, not the engine's generic title.
     #[tokio::test]
@@ -1794,6 +1977,119 @@ mod tests {
             "got {}",
             session.display_name
         );
+    }
+
+    /// AUDIT-PERF-001 + AUDIT-W2-007: the recent projection is bounded by the
+    /// storage LIMIT, hydrates ONLY the page (+ live owners), and a running
+    /// session beyond the recency cap remains visible/actionable.
+    #[tokio::test]
+    async fn list_recent_is_bounded_hydrates_page_only_keeps_live_owners() {
+        let bus = EventBus::new();
+        let reg = Arc::new(EngineRegistry::new(
+            bus.clone(),
+            Arc::new(saiwork_diagnostics::Diagnostics::new()),
+            Arc::new(saiwork_process::ProcessSupervisor::new(bus.clone())),
+        ));
+        let (engine, _sends) = TestEngine::new("oc", true);
+        reg.register(Arc::new(engine));
+        let db = Db::open_in_memory().unwrap();
+        seed_test_workspace(&db, "ws-A");
+
+        // 300 durable IDLE rows with created_at in the far future: durable
+        // recency will push everything else out of any 256-row page.
+        let future_base =
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_millis() as i64
+                + 1_000_000;
+        db.with_conn(|conn| {
+            for i in 0..300i64 {
+                conn.execute(
+                    "INSERT INTO sessions_meta
+                       (id, workspace_id, engine_id, engine_session_id, display_name, last_opened_at, created_at, updated_at, resumable)
+                     VALUES (?1, 'ws-A', 'oc', ?2, ?1, ?3, ?3, ?3, 1)",
+                    rusqlite::params![format!("idle-{i:03}"), format!("up-{i}"), future_base + i],
+                )
+                .map(|_| ())
+                .map_err(saiwork_storage::StorageError::Query)?;
+            }
+            Ok(())
+        })
+        .unwrap();
+
+        let sessions = SessionManager::new(db, bus.clone(), reg.clone());
+        let ctx = reg.start_context(None, None);
+        reg.start("oc", &ctx).await.unwrap();
+        // Created NOW: older than all idle rows → outside the newest-256 page…
+        let live = sessions.create("oc", Some("ws-A"), None).await.unwrap();
+        sessions.set_running(&live.id, true);
+
+        let page = sessions
+            .list_recent(Some("ws-A"), RECENT_SESSION_CAP)
+            .unwrap();
+        // …yet the live owner MUST be included (cap + exceptions), and the
+        // page itself is exactly bounded.
+        assert_eq!(page.len(), RECENT_SESSION_CAP + 1);
+        let live_row = page.iter().find(|s| s.id == live.id).expect("live owner visible");
+        assert!(live_row.running);
+
+        // Newest-first ordering preserved across page + exception rows.
+        let created: Vec<i64> = page.iter().map(|s| s.created_at).collect();
+        let mut sorted = created.clone();
+        sorted.sort_unstable_by_key(|c| std::cmp::Reverse(*c));
+        assert_eq!(created, sorted);
+
+        // Page-only hydration: an outside-cap idle row is NOT pulled into the
+        // long-lived map (no lifetime-history materialization).
+        assert!(sessions.get("idle-000").is_none());
+        // A returned row stays resolvable through get().
+        let newest = &page[0];
+        assert!(sessions.get(&newest.id).is_some());
+    }
+
+    /// The tests cannot reach the manager's private `db`; seeding helper for
+    /// the all-idle assertion above uses a fresh manager instead.
+    #[tokio::test]
+    async fn list_recent_all_idle_scope_never_exceeds_cap() {
+        let bus = EventBus::new();
+        let reg = Arc::new(EngineRegistry::new(
+            bus.clone(),
+            Arc::new(saiwork_diagnostics::Diagnostics::new()),
+            Arc::new(saiwork_process::ProcessSupervisor::new(bus.clone())),
+        ));
+        let (engine, _sends) = TestEngine::new("oc", true);
+        reg.register(Arc::new(engine));
+        let db = Db::open_in_memory().unwrap();
+        seed_test_workspace(&db, "ws-B");
+        {
+            let future =
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_millis() as i64;
+            db.with_conn(|conn| {
+                for i in 0..400i64 {
+                    conn.execute(
+                        "INSERT INTO sessions_meta
+                           (id, workspace_id, engine_id, engine_session_id, display_name, last_opened_at, created_at, updated_at, resumable)
+                         VALUES (?1, 'ws-B', 'oc', ?2, ?1, ?3, ?3, ?3, 1)",
+                        rusqlite::params![format!("h{i:03}"), format!("up-{i}"), future + i],
+                    )
+                    .map(|_| ())
+                    .map_err(saiwork_storage::StorageError::Query)?;
+                }
+                Ok(())
+            })
+            .unwrap();
+        }
+        let sessions = SessionManager::new(db, bus.clone(), reg.clone());
+        let ctx = reg.start_context(None, None);
+        reg.start("oc", &ctx).await.unwrap();
+
+        let page = sessions.list_recent(Some("ws-B"), RECENT_SESSION_CAP).unwrap();
+        assert_eq!(page.len(), RECENT_SESSION_CAP);
+        assert!(page.windows(2).all(|w| w[0].created_at >= w[1].created_at));
     }
 
     /// Connection-owned (resume=false) sessions are usable NOW right after
@@ -2251,6 +2547,79 @@ mod tests {
         assert_eq!(sa_done.active_run, None);
         let ok = sessions.send(&sb.id, "now ok", None).await;
         assert!(ok.is_ok(), "gated send must succeed after B's terminal");
+    }
+
+    /// AUDIT-W2-003 case 1+3: an active maintenance reservation makes Forget
+    /// fail closed (metadata preserved), and a held Forget reservation makes
+    /// new maintenance lose — exactly one ownership transition wins.
+    #[tokio::test]
+    async fn forget_is_exclusive_with_maintenance_reservation() {
+        let (sessions, reg, _sends, _bus) = harness("oc", true);
+        let ctx = reg.start_context(Some("ws-A".to_string()), None);
+        reg.start("oc", &ctx).await.unwrap();
+        let sa = sessions.create("oc", Some("ws-A"), None).await.unwrap();
+
+        // Maintenance already reserved → Forget rejected, session intact.
+        let (_session, _maint) = sessions.reserve_maintenance(&sa.id).unwrap();
+        let err = sessions.reserve_workspace_forget("ws-A").unwrap_err();
+        assert!(
+            matches!(err, CoreError::WorkspaceInUse { .. }),
+            "forget must reject under maintenance, got {err:?}"
+        );
+        assert!(sessions.get(&sa.id).is_some(), "metadata preserved on rejection");
+        drop(_maint);
+
+        // Forget reserved → new maintenance rejects.
+        let guard = sessions.reserve_workspace_forget("ws-A").unwrap();
+        let err = sessions.reserve_maintenance(&sa.id).unwrap_err();
+        assert!(
+            matches!(err, CoreError::WorkspaceInUse { .. }),
+            "maintenance during forget must lose, got {err:?}"
+        );
+        drop(guard);
+
+        // Ownership fully released: forget is reservable again.
+        let guard2 = sessions.reserve_workspace_forget("ws-A").unwrap();
+        drop(guard2);
+    }
+
+    /// AUDIT-W2-003 case 2: a send that raced past preflight keeps Forget out
+    /// while its reservation lives; once it settles, Forget wins and no NEW
+    /// send may start until the live projection is removed.
+    #[tokio::test]
+    async fn forget_races_send_exactly_one_owner_wins() {
+        let (sessions, reg, eng, _bus) = blocking_harness("oc");
+        let ctx = reg.start_context(Some("ws-A".to_string()), None);
+        reg.start("oc", &ctx).await.unwrap();
+
+        let sa = sessions.create("oc", Some("ws-A"), None).await.unwrap();
+
+        // Send in flight (reservation held, adapter blocked).
+        let send_task = tokio::spawn({
+            let sessions = sessions.clone();
+            let sa_id = sa.id.clone();
+            async move { sessions.send(&sa_id, "racing forget", None).await }
+        });
+        eng.entered.notified().await;
+
+        // Forget observes the live reservation and fails closed.
+        let err = sessions.reserve_workspace_forget("ws-A").unwrap_err();
+        assert!(matches!(err, CoreError::WorkspaceInUse { .. }), "got {err:?}");
+
+        // Settle the send; the workspace is idle again.
+        eng.release.add_permits(1);
+        send_task.await.unwrap().unwrap();
+        sessions.note_terminal(&sa.id, "run-1");
+
+        // Now Forget acquires exclusive ownership…
+        let guard = sessions.reserve_workspace_forget("ws-A").unwrap();
+        // …and a NEW send may not start while it is held.
+        let err = sessions.send(&sa.id, "during forget", None).await.unwrap_err();
+        assert!(
+            matches!(err, CoreError::WorkspaceInUse { .. }),
+            "send during held forget must lose, got {err:?}"
+        );
+        drop(guard);
     }
 
     /// CORE-003 reproduction: terminal(B) -> terminal(A) -> late started/accepted(B)

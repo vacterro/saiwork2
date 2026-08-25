@@ -1,10 +1,10 @@
-// Shell render-scope test (TASK 24 perf): App is the single store subscriber,
-// so every batched token update used to rerender the whole shell. The memo
-// comparators gate each panel to its own slice; this test drives a real 10k
-// delta stream through the store and asserts that text-only batches rerender
-// ONLY Conversation (which is intentionally unmemoized at App level — it may
-// render per batch), never the title bar, lists, composer, SAIPEN bar, status
-// line, or activity panel.
+// Shell render-scope test (TASK 24 perf + AUDIT-PERF-003): the root no longer
+// subscribes to the whole AppState — App renders only shell facts and every
+// panel subscribes to its own declared tuple via useAppSlice. This test pins
+// (a) the structural contract that the shell slice excludes streaming keys,
+// so a text delta can never re-execute the App render, and (b) drives a real
+// 10k delta stream through the store asserting the per-panel equality gates
+// behave exactly as before (text-only batches rerender ONLY Conversation).
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { store, type AppState } from "../state/store";
 import type { Envelope } from "@saiwork2/contracts";
@@ -48,6 +48,25 @@ afterEach(() => {
 });
 
 describe("shell render scope during streaming (TASK 24 perf)", () => {
+  it("App's own subscription slice excludes streaming keys (AUDIT-PERF-003)", async () => {
+    // Structural pin: the shell tuple App subscribes to must not contain any
+    // key that changes on an ordinary text delta — otherwise the root render
+    // re-executes per bridge batch regardless of panel memoization.
+    const { SHELL_KEYS } = await import("./App");
+    const streamingKeys: string[] = [
+      "activeMessage",
+      "messages",
+      "streamGaps",
+      "runningStale",
+      "historyStatus",
+      "queue",
+      "sessions",
+    ];
+    for (const k of SHELL_KEYS) {
+      expect(streamingKeys).not.toContain(k);
+    }
+  });
+
   it("10k text deltas rerender only Conversation", () => {
     // Seed a realistic shell: one workspace, one engine, one session, one
     // active run with an assistant message.

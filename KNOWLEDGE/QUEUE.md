@@ -130,8 +130,10 @@ storage open/migrate → QueueManager::init → recover stale state → spawn wo
 - QUEUED → editable/reorderable/deletable. LEASED/DISPATCHED payload is
   locked; user intent routes through cancel (engine cancel → authoritative
   terminal), never a raw DELETE racing the dispatcher.
-- Delete of a QUEUED item is a CAS to terminal `CANCELLED` (evidence kept;
-  bulk cleanup policy is deferred, no indefinite unbounded growth).
+- Delete of a QUEUED item is a CAS to terminal `CANCELLED` (evidence kept).
+  Explicit **Clear finished** cleanup may physically delete only
+  `DONE|FAILED|CANCELLED`; it never deletes active work or `UNKNOWN`, whose
+  external execution may still be mutating the workspace.
 
 ## Pause / retry / fail-closed
 
@@ -205,7 +207,13 @@ provider configuration is mirrored (law 25).
 
 ## Events
 
-`queue.changed` (item_id, state) after **every** committed transition;
+`queue.changed` (item_id?, state) after **every** committed transition;
+`item_id` names the row for incremental single-row patches, while a reorder
+publishes `item_id = null` — the collection-invalidation contract (AUDIT-W2-001).
+`revision` is the CAS token for EVERY user-visible mutation: a reorder bumps it
+exactly once for every row whose `order_key` changes, including displaced rows
+(AUDIT-W2-002), so a stale frontend can never pass CAS against ordering state
+that changed under it.
 `queue.dispatch_started` / `queue.dispatch_completed` / `queue.dispatch_failed`
 around the engine handoff and run terminal; `runtime.warning`
 (`QUEUE_OUTCOME_UNKNOWN`, `QUEUE_CANCEL_DELIVERY_FAILED`) for recovery

@@ -19,6 +19,17 @@ describe("Dock (Phase B)", () => {
         status: "ready",
         paused: false,
         items: [{ state: "queued" }, { state: "queued" }, { state: "running" }] as any,
+        // The loaded page is intentionally partial: the badge must use the
+        // backend aggregate, never infer a false total from mounted rows.
+        counts: {
+          queued: 7,
+          leased: 0,
+          dispatched: 0,
+          done: 0,
+          failed: 0,
+          cancelled: 0,
+          unknown: 0,
+        },
         revision: 0,
         stale: false,
       },
@@ -26,7 +37,7 @@ describe("Dock (Phase B)", () => {
     const html = renderToString(<Dock {...dockProps(st)} />);
     expect(html).toContain("Queue");
     expect(html).toContain("dock-tab__badge");
-    expect(html).toContain(">2<");
+    expect(html).toContain(">7<");
   });
 
   it("renders the collapsed rail (no tab list) when dockCollapsed", () => {

@@ -1295,6 +1295,7 @@ impl EngineAdapter for HarnessAdapter {
         let run = Arc::new(RunRecord {
             run_id: RunId::new(format!("run-{}", Uuid::new_v4())),
             session_id: session.saiwork_id.clone(),
+            model: req.model.clone(),
             harness_session_id: session.harness_id.clone(),
             generation,
             cancel_requested: std::sync::atomic::AtomicBool::new(false),

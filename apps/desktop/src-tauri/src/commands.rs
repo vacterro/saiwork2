@@ -178,10 +178,12 @@ pub fn set_model_favorites(favorites: Vec<String>, core: State<'_, Arc<App>>) ->
 /// engine/model through this command, and it was silently swallowed before —
 /// the write rejected, the rejection ignored, engine state never survived a
 /// restart.
-const WRITABLE_SETTING_KEYS: &[&str] = &["ui.layout.v1", "ui.engine.v1"];
+const WRITABLE_SETTING_KEYS: &[&str] = saiwork_core::App::GENERIC_UI_SETTING_KEYS;
 
 #[tauri::command]
 pub fn get_setting(core: State<'_, Arc<App>>, key: String) -> CmdResult<Option<String>> {
+    // AUDIT-CORE-004: reads obey the same ownership boundary as writes.
+    App::ensure_generic_ui_setting(&key).map_err(err)?;
     core.db.get_setting(&key).map_err(err)
 }
 
@@ -201,16 +203,17 @@ pub fn set_setting(core: State<'_, Arc<App>>, key: String, value: String) -> Cmd
 // ---- Settings preset import (T-078) ----
 
 /// Import a durable-UI settings preset from a user-picked file. The file
-/// must be a .json preset (or a .zip containing one — ZIP import is not yet
-/// supported; the command detects ZIP magic and returns a clear error).
-/// Never JSON.parses a ZIP (T-078).
+/// must be a .json preset (ZIP import is not supported; core detects ZIP
+/// magic and returns a clear error). Never JSON.parses a ZIP (T-078).
 #[tauri::command]
 pub fn import_preset(
     path: String,
     core: State<'_, Arc<App>>,
 ) -> CmdResult<saiwork_core::PresetImportSummary> {
     require_ready(&core)?;
-    let bytes = std::fs::read(&path).map_err(|e| format!("preset file read failed: {e}"))?;
+    // AUDIT-CORE-003: the read itself is bounded at the IPC boundary (core
+    // authority); an oversized picked file never materializes fully here.
+    let bytes = App::read_preset_capped(&path).map_err(err)?;
     core.import_preset(&bytes).map_err(err)
 }
 
@@ -394,8 +397,11 @@ pub async fn resolve_question(
 // ---- Queue (TASK 13) ----
 
 #[tauri::command]
-pub fn queue_snapshot(core: State<'_, Arc<App>>) -> CmdResult<saiwork_queue::QueueSnapshot> {
-    core.queue.snapshot().map_err(err)
+pub fn queue_snapshot(
+    active_offset: Option<usize>,
+    core: State<'_, Arc<App>>,
+) -> CmdResult<saiwork_queue::QueueSnapshot> {
+    core.queue.snapshot(active_offset.unwrap_or(0)).map_err(err)
 }
 
 /// Authoritative frontend-reconciliation ownership (TASK 24 §9): exact
@@ -545,6 +551,12 @@ pub fn queue_retry(
 ) -> CmdResult<()> {
     require_ready(&core)?;
     core.queue.retry(&item_id, expected_revision).map_err(err)
+}
+
+#[tauri::command]
+pub fn queue_purge_terminal(core: State<'_, Arc<App>>) -> CmdResult<usize> {
+    require_ready(&core)?;
+    core.queue.purge_terminal().map_err(err)
 }
 
 // ---- SAIPEN ----

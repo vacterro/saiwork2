@@ -38,6 +38,8 @@ pub(crate) struct RunRecord {
     pub run_id: RunId,
     /// SAIWORK2 session id (the generic surface; SendRequest.session_id).
     pub session_id: String,
+    /// Canonical requested model; None means the Harness profile default.
+    pub model: Option<String>,
     /// Upstream Harness/ACP session id (opaque; Harness-owned, §7).
     pub harness_session_id: String,
     /// Runtime generation this run belongs to (stale events never cross
@@ -95,6 +97,7 @@ impl RunRecord {
             bus.publish(Event::MessageStarted {
                 session_id: self.session_id.clone().into(),
                 run_id: self.run_id.clone(),
+                model: self.model.clone(),
             });
         }
         // Signal any waiting prompt task (first execution evidence → the

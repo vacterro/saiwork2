@@ -343,7 +343,8 @@ async fn stop_all_stops_every_registered_engine() {
     let ctx = start_ctx(bus, Some(tmp.path().to_path_buf()));
     registry.start("fake", &ctx).await.expect("fake starts");
     registry.start(CLI_ID, &ctx).await.expect("cli starts");
-    registry.stop_all().await;
+    let failures = registry.stop_all().await;
+    assert!(failures.is_empty(), "unexpected stop failures: {failures:?}");
     assert!(matches!(fake.health(), EngineHealth::Stopped));
     assert!(matches!(cli.health(), EngineHealth::Stopped));
 }

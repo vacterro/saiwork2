@@ -124,6 +124,9 @@ pub enum Event {
     MessageStarted {
         session_id: SessionId,
         run_id: RunId,
+        /// Canonical model id requested for this run. `None` means the
+        /// adapter delegated selection to its engine default.
+        model: Option<String>,
     },
     #[serde(rename = "message.delta")]
     MessageDelta {
@@ -238,9 +241,14 @@ pub enum Event {
         request_id: RequestId,
     },
 
+    /// AUDIT-W2-001: `item_id` names the single row a committed transition
+    /// is attributable to, enabling the frontend's incremental one-row patch.
+    /// A collection-level mutation (reorder) carries `None`: no single row
+    /// describes the change, and consumers MUST invalidate the whole queue
+    /// projection instead. Never use `None` for an ordinary single-row
+    /// transition — that would force a full snapshot per row.
     #[serde(rename = "queue.changed")]
-    QueueChanged { item_id: QueueItemId, state: String },
-    #[serde(rename = "queue.dispatch_started")]
+    QueueChanged { item_id: Option<QueueItemId>, state: String },    #[serde(rename = "queue.dispatch_started")]
     QueueDispatchStarted { item_id: QueueItemId },
     #[serde(rename = "queue.dispatch_completed")]
     QueueDispatchCompleted { item_id: QueueItemId },

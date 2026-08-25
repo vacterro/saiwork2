@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { renderToString } from "react-dom/server";
-import { Conversation, timestampLabel } from "./Conversation";
+import { Conversation, MarkdownBody, timestampLabel } from "./Conversation";
 import type { AppState } from "../state/store";
 import { initialState } from "../state/store";
 
@@ -17,6 +17,7 @@ function stateWith(sessionId: string, text: string, status: "streaming" | "compl
           runId: "r1",
           status,
           text,
+          model: "openai/gpt-5.6",
           tools: [],
           permissions: [], questions: [],
           ts: Date.now(),
@@ -27,6 +28,13 @@ function stateWith(sessionId: string, text: string, status: "streaming" | "compl
 }
 
 describe("Conversation rendering (§20–§28)", () => {
+  it("shows the model name on each assistant answer", () => {
+    const html = renderToString(
+      <Conversation state={stateWith("s1", "answer", "complete")} onError={() => undefined} />,
+    );
+    expect(html.replaceAll("<!-- -->", "")).toContain("model: openai/gpt-5.6");
+  });
+
   it("renders streaming text as plain pre, not Markdown", () => {
     const html = renderToString(<Conversation state={stateWith("s1", "# heading\n`code`", "streaming")} onError={() => undefined} />);
     // Streaming must stay raw text — no <h1> heading, no markdown conversion.
@@ -97,6 +105,24 @@ describe("Conversation bounded windowing (TASK 24 perf)", () => {
     expect(html).toContain("message 9");
     expect(html).not.toContain("Load earlier");
     expect(html.match(/data-mid=/g)?.length).toBe(10);
+  });
+});
+
+describe("MarkdownBody memoization contract (AUDIT-PERF-004)", () => {
+  it("is memo-wrapped with stable module-level plugin/component tables", () => {
+    // No DOM/mount renderer exists in this environment, so the render-count
+    // property is pinned structurally: memo-by-text identity + module-level
+    // stable tables guarantee an unchanged finalized document is never
+    // reparsed when the per-minute clock rerenders its MessageView.
+    expect((MarkdownBody as unknown as { $$typeof: symbol }).$$typeof).toBe(
+      Symbol.for("react.memo"),
+    );
+  });
+
+  it("finalized Markdown renders through MarkdownBody (not plain pre)", () => {
+    const html = renderToString(<Conversation state={stateWith("s1", "# Title", "complete")} onError={() => {}} />);
+    expect(html).toContain('class="md"');
+    expect(html).not.toContain("<pre");
   });
 });
 

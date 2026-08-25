@@ -284,6 +284,9 @@ const MessageView = memo(function MessageView({
 <div className={`msg msg--assistant msg--${message.status}`} data-mid={message.id}>
         <div className="msg__meta">
           <span>assistant</span>
+          <span className="msg__model" title="Model used for this answer">
+            model: {message.model ?? "model unavailable"}
+          </span>
           <span className={`status status--${message.status}`}>{statusLabel}</span>
           {message.ts > 0 && (
             <span className="msg__time" title={new Date(message.ts).toISOString()}>
@@ -330,40 +333,50 @@ const MessageView = memo(function MessageView({
   );
 });
 
-function MarkdownBody({ text }: { text: string }) {
+// AUDIT-PERF-004: stable module-level plugin/renderer tables. Recreating the
+// remarkPlugins array or components object per render would defeat memoization
+// (new identity per minute-tick) and reparse unchanged documents.
+const REMARK_PLUGINS = [remarkGfm];
+const MARKDOWN_COMPONENTS = {
+  // Fenced code blocks: the `pre` wrapper owns the language + copy.
+  pre({ children }: { children?: React.ReactNode }) {
+    const child = Children.only(children) as React.ReactElement<{
+      className?: string;
+      children?: React.ReactNode;
+    }>;
+    const match = /language-(\w+)/.exec(child?.props?.className ?? "");
+    const code = String(child?.props?.children ?? "").replace(/\n$/, "");
+    return <CodeBlock lang={match?.[1] ?? ""} code={code} />;
+  },
+  // Inline code stays plain and safe.
+  code({ children }: { children?: React.ReactNode }) {
+    return <code>{children}</code>;
+  },
+  a({ href, children }: { href?: string; children?: React.ReactNode }) {
+    return (
+      <a href={href} target="_blank" rel="noreferrer">
+        {children}
+      </a>
+    );
+  },
+} as const;
+
+/// Memoized strictly by `text`: the per-minute relative-time refresh rerenders
+/// every visible MessageView, but an unchanged finalized document must NEVER
+/// reparse (the old implementation rebuilt up to 50 full Markdown parse trees
+/// every 60s just because small age labels changed — AUDIT-PERF-004).
+/// Memoized strictly by `text` (AUDIT-PERF-004). Exported for the structural
+/// memoization-contract test — this environment has no DOM/mount renderer, so
+/// the render-count property is pinned by identity + plugin-table stability.
+export const MarkdownBody = memo(function MarkdownBody({ text }: { text: string }) {
   return (
     <div className="md">
-      <ReactMarkdown
-        remarkPlugins={[remarkGfm]}
-        components={{
-          // Fenced code blocks: the `pre` wrapper owns the language + copy.
-          pre({ children }) {
-            const child = Children.only(children) as React.ReactElement<{
-              className?: string;
-              children?: React.ReactNode;
-            }>;
-            const match = /language-(\w+)/.exec(child?.props?.className ?? "");
-            const code = String(child?.props?.children ?? "").replace(/\n$/, "");
-            return <CodeBlock lang={match?.[1] ?? ""} code={code} />;
-          },
-          // Inline code stays plain and safe.
-          code({ children }) {
-            return <code>{children}</code>;
-          },
-          a({ href, children }) {
-            return (
-              <a href={href} target="_blank" rel="noreferrer">
-                {children}
-              </a>
-            );
-          },
-        }}
-      >
+      <ReactMarkdown remarkPlugins={REMARK_PLUGINS} components={MARKDOWN_COMPONENTS}>
         {text}
       </ReactMarkdown>
     </div>
   );
-}
+});
 
 function CodeBlock({ lang, code }: { lang: string; code: string }) {
   const [copied, setCopied] = useState(false);

@@ -11,7 +11,8 @@
 //! - `POST /session/{id}/message`      — run simulation; returns the final message JSON when the run ends
 //! - `POST /session/{id}/abort`        — abort the active run → `true`
 //! - `GET  /event`                     — global SSE stream (deltas, parts, session.status, session.error)
-//! - `POST /session/{id}/permission/{requestID}/reply` — permission decision
+//! - `POST /permission/{requestID}/reply` — permission decision
+//! - `POST /question/{requestID}/reply|reject` — question decision
 //!
 //! Run behavior is selected by env (read once at startup):
 //! - `FIXTURE_MSG_MODE`: `complete` | `hang` | `error500` | `malformed` |
@@ -601,7 +602,14 @@ fn serve_connection(mut stream: TcpStream, state: Arc<State>) {
         ("POST", ["session", id, "abort"]) => {
             handle_abort(&mut stream, state, id);
         }
-        ("POST", ["session", id, "permission", request_id, "reply"]) => {
+        ("POST", ["permission", request_id, "reply"]) => {
+            let reply = serde_json::from_slice::<serde_json::Value>(&request.body)
+                .ok()
+                .and_then(|body| body.get("reply").and_then(|value| value.as_str()).map(str::to_string));
+            if !matches!(reply.as_deref(), Some("once" | "always" | "reject")) {
+                write_json(&mut stream, "400 Bad Request", &error_body("BadRequest", "reply must be once, always, or reject"));
+                return;
+            }
             state
                 .permission_requests
                 .lock()
@@ -610,7 +618,15 @@ fn serve_connection(mut stream: TcpStream, state: Arc<State>) {
             // Reply is accepted; the (fixture) permission is then resolved.
             state.publish(serde_json::json!({
                 "id": state.evt_id(), "type": "permission.resolved",
-                "properties": { "sessionID": id, "requestID": request_id }
+                "properties": { "requestID": request_id }
+            }));
+            write_response(&mut stream, "200 OK", "application/json", b"{}");
+        }
+        ("POST", ["question", request_id, action @ ("reply" | "reject")]) => {
+            state.publish(serde_json::json!({
+                "id": state.evt_id(),
+                "type": if *action == "reply" { "question.replied" } else { "question.rejected" },
+                "properties": { "requestID": request_id }
             }));
             write_response(&mut stream, "200 OK", "application/json", b"{}");
         }

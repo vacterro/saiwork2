@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import type { SliceProps } from "../../state/slices";
 import {
+  createDockResizeCoalescer,
   DOCK_MAX_WIDTH,
   DOCK_MIN_WIDTH,
   setDockTab,
@@ -96,6 +97,14 @@ export function Dock({ state, activity, queue, files }: DockProps) {
   // mount/unmount mid-drag. No `window` listeners, so there is nothing to leak
   // on unmount, blur or pointer-cancel.
   const dragStart = useRef<{ x: number; w: number } | null>(null);
+  // AUDIT-PERF-005: at most ONE live width commit per animation frame; the
+  // final released position is committed synchronously on end (the frame
+  // sink cancels its pending callback there). Unmount cancels ownership.
+  const resizeFrames = useRef(createDockResizeCoalescer()).current;
+
+  useEffect(() => {
+    return () => resizeFrames.cancel();
+  }, [resizeFrames]);
 
   const onResizeStart = useCallback(
     (e: React.PointerEvent) => {
@@ -108,29 +117,36 @@ export function Dock({ state, activity, queue, files }: DockProps) {
   );
 
   const onResizeMove = useCallback((e: React.PointerEvent) => {
-    const start = dragStart.current;
-    if (!start) return;
+    e.preventDefault();
     // Dock pinned to the right edge: dragging left grows the width. Only the
-    // live projection updates at pointer rate; the durable write happens once
-    // on pointerup (see onResizeEnd).
-    setDockWidth(start.w + (start.x - e.clientX));
-  }, []);
+    // live projection updates — coalesced to one commit per frame; the
+    // durable write happens once on pointerup (see onResizeEnd).
+    resizeFrames.move(dragStart.current, e.clientX, setDockWidth);
+  }, [resizeFrames]);
 
-  const onResizeEnd = useCallback((e: React.PointerEvent) => {
-    if (!dragStart.current) return;
-    dragStart.current = null;
-    setDragging(false);
-    const el = e.currentTarget as HTMLElement;
-    if (el.hasPointerCapture?.(e.pointerId)) {
-      el.releasePointerCapture(e.pointerId);
-    }
-    // Exactly one durable commit for the completed drag (carries the final
-    // released — and clamped — width). Tab/collapse/close-when-done preferences
-    // keep their own one-action/one-write behavior.
-    persistUiLayout();
-  }, []);
+  const onResizeEnd = useCallback(
+    (e: React.PointerEvent) => {
+      const start = dragStart.current;
+      dragStart.current = null;
+      if (!resizeFrames.end(start, e.clientX, setDockWidth)) {
+        return; // no active drag
+      }
+      setDragging(false);
+      const el = e.currentTarget as HTMLElement;
+      if (el.hasPointerCapture?.(e.pointerId)) {
+        el.releasePointerCapture(e.pointerId);
+      }
+      // Exactly one durable commit for the completed drag (carries the final
+      // released — and clamped — width). Tab/collapse/close-when-done
+      // preferences keep their own one-action/one-write behavior.
+      persistUiLayout();
+    },
+    [resizeFrames],
+  );
 
-  const queueBadge = state.queue.items.filter((i) => i.state === "queued").length;
+    // The badge uses the backend's exact durable aggregate — never a count
+    // inferred from the bounded mounted page (T-095).
+    const queueBadge = state.queue.counts.queued;
 
   if (railMode) {
     return (

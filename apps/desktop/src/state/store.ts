@@ -7,13 +7,13 @@ import type {
   EngineInfo,
   LifecycleState,
   ModelInfo,
+  QueueCounts,
   QueueItem,
   QueueStatus,
   SaipenState,
   Session,
   WorkspaceSummary,
 } from "@saiwork2/contracts";
-import { useSyncExternalStore } from "react";
 import { str, type TypedEvent } from "./events";
 import type { DockTab } from "../components/dock/types";
 import { applyWorkspaceClosed } from "../app/workspaceSelection";
@@ -67,6 +67,10 @@ export interface Message {
   runId: string;
   status: MessageStatus;
   text: string;
+  /** Canonical model id carried by the run-start event. `engine default`
+   * means the adapter delegated selection; historical adapters that cannot
+   * report it render `model unavailable` instead of guessing. */
+  model?: string;
   tools: ToolActivity[];
   error?: string;
   permissions: PermissionEntry[];
@@ -164,11 +168,21 @@ export interface AppState {
    * The final assistant turn is appended here EXACTLY ONCE, on its
    * authoritative terminal. */
   messages: Record<string, Message[]>;
-  /** sessionId → the live streaming assistant turn (the "active tail"), or
-   * null when the session is idle. Replaced (new identity) per coalesced
-   * delta batch; committed into `messages` on the run's terminal. The
-   * rendered transcript is `messages[sid] + activeMessage[sid]`. */
-  activeMessage: Record<string, Message | null>;
+  /** sessionId → the live streaming assistant turn (the "active tail").
+   * Replaced (new identity) per coalesced delta batch; committed into
+   * `messages` on the run's terminal. The
+   * AUDIT-PERF-002: SPARSE live-tail map — a key exists ONLY while that
+   * session genuinely owns a streaming tail (narrowed type forbids the old
+   * null-tombstone pattern). Terminal commit deletes the key, so hot-path
+   * spread cost is proportional to LIVE tails, never completed history.
+   * The rendered transcript is `messages[sid] + activeMessage[sid]`. */
+  activeMessage: Record<string, Message>;
+  /** AUDIT-W2-004: per-domain EVENT watermarks (highest applied envelope seq
+   * that could invalidate each reconcile-owned projection). Reconciliation
+   * captures them before its authority reads and commits a domain snapshot
+   * only if no newer relevant event landed while the read was in flight —
+   * snapshots may never overwrite events newer than themselves. */
+  reconcileSeq: { sessions: number; engines: number; runs: number };
   /** Authoritative engine-history state per session (TASK 24 §9): distinct
    * from an empty conversation — `unavailable` means the engine exposes no
    * history capability, `error` means the authoritative read failed. The UI
@@ -190,6 +204,12 @@ export interface AppState {
     status: QueueStatus;
     paused: boolean;
     items: QueueItem[];
+    /** Exact backend aggregates for the complete durable queue. */
+    counts: QueueCounts;
+    activeOffset: number;
+    activeLimit: number;
+    queuedBefore: number;
+    activeHasMore: boolean;
     revision: number;
     /** True when the last authoritative snapshot fetch failed: the items
      * shown are stale and every revision-sensitive mutation is disabled
@@ -248,6 +268,7 @@ export const initialState: AppState = {
   activeSessionId: null,
   messages: {},
   activeMessage: {},
+  reconcileSeq: { sessions: 0, engines: 0, runs: 0 },
   historyStatus: {},
   running: {},
   runningStale: false,
@@ -256,6 +277,19 @@ export const initialState: AppState = {
     status: "stopped",
     paused: false,
     items: [],
+    counts: {
+      queued: 0,
+      leased: 0,
+      dispatched: 0,
+      done: 0,
+      failed: 0,
+      cancelled: 0,
+      unknown: 0,
+    },
+    activeOffset: 0,
+    activeLimit: 100,
+    queuedBefore: 0,
+    activeHasMore: false,
     revision: 0,
     stale: false,
     payloadPreview: true,
@@ -327,6 +361,30 @@ const LOG_WORTHY = new Set<string>([
 export function isSessionInScope(state: AppState, sessionId: string): boolean {
   return state.sessions.some((s) => s.id === sessionId);
 }
+
+/** AUDIT-W2-004: which reconcile-owned projection an event can invalidate.
+ * An event of one of these types proves the domain moved; any reconcile read
+ * for that domain that was already in flight is stale and must not commit. */
+const RECONCILE_EVENT_DOMAINS: Record<string, "sessions" | "engines" | "runs"> = {
+  "session.created": "sessions",
+  "session.loaded": "sessions",
+  "session.changed": "sessions",
+  "session.closed": "sessions",
+  "engine.starting": "engines",
+  "engine.ready": "engines",
+  "engine.stopping": "engines",
+  "engine.stopped": "engines",
+  "engine.failed": "engines",
+  "engine.health_changed": "engines",
+  "process.started": "engines",
+  "process.exited": "engines",
+  "process.failed": "engines",
+  "message.started": "runs",
+  "message.completed": "runs",
+  "message.failed": "runs",
+  "message.cancelled": "runs",
+  "message.outcome_unknown": "runs",
+};
 
 export function applyEvent(state: AppState, event: TypedEvent): AppState {
   const p = event.payload;
@@ -548,6 +606,7 @@ export function applyEvent(state: AppState, event: TypedEvent): AppState {
     case "message.started": {
       const sessionId = str(p, "session_id");
       const runId = str(p, "run_id");
+      const model = str(p, "model") ?? "engine default";
       if (!sessionId || !runId || !isSessionInScope(state, sessionId)) return { ...state, log };
       const message: Message = {
         id: `${runId}-assistant`,
@@ -555,6 +614,7 @@ export function applyEvent(state: AppState, event: TypedEvent): AppState {
         runId,
         status: "streaming",
         text: "",
+        model,
         tools: [],
         permissions: [], questions: [],
         ts: event.ts,
@@ -576,6 +636,9 @@ export function applyEvent(state: AppState, event: TypedEvent): AppState {
             completed === state.messages[sessionId]
               ? state.messages
               : { ...state.messages, [sessionId]: completed },
+          activeMessage: previousTail.model === model
+            ? state.activeMessage
+            : { ...state.activeMessage, [sessionId]: { ...previousTail, model } },
           running: { ...state.running, [sessionId]: runId },
           sessions: state.sessions.map((s) => (s.id === sessionId ? { ...s, running: true } : s)),
           log,
@@ -1133,6 +1196,7 @@ export function hydrateSessionHistory(
             runId: "",
             status: "complete",
             text: "",
+            model: "model unavailable",
             tools: [tool],
             permissions: [], questions: [],
             ts: h.ts && h.ts > 0 ? h.ts : Date.now(),
@@ -1157,6 +1221,7 @@ export function hydrateSessionHistory(
         runId: "",
         status: "complete",
         text: h.text,
+        model: h.role === "user" ? undefined : "model unavailable",
         tools: [],
         permissions: [], questions: [],
         ts: h.ts && h.ts > 0 ? h.ts : Date.now(),
@@ -1535,12 +1600,16 @@ function commitTerminal(
   const tail = state.activeMessage[sessionId] ?? null;
   if (tail !== null && tail.runId === runId) {
     const list = state.messages[sessionId] ?? [];
+    // AUDIT-PERF-002: the key is DELETED, never tombstoned to null — the
+    // sparse map stays proportional to genuinely live tails.
+    const activeMessage = { ...state.activeMessage };
+    delete activeMessage[sessionId];
     return {
       messages: {
         ...state.messages,
         [sessionId]: clearUncertainIn([...list, patch(tail)], runId),
       },
-      activeMessage: { ...state.activeMessage, [sessionId]: null },
+      activeMessage,
     };
   }
   const patched = patchStream(state, sessionId, runId, patch);
@@ -1557,6 +1626,7 @@ function newAssistantTail(runId: string): Message {
     runId,
     status: "streaming",
     text: "",
+    model: "engine default",
     tools: [],
     permissions: [], questions: [],
     ts: Date.now(),
@@ -1662,7 +1732,17 @@ class Store {
 
   private apply(event: TypedEvent): void {
     const prev = this.state;
-    const next = applyEvent(prev, event);
+    let next = applyEvent(prev, event);
+    // AUDIT-W2-004: stamp the owning domain's watermark INDEPENDENTLY of
+    // whether the reducer consumed the payload — a scope-filtered event still
+    // proves the domain moved, so in-flight reconcile reads are suspect.
+    // Stamping NEVER gates application.
+    const domain = RECONCILE_EVENT_DOMAINS[event.type];
+    if (domain && event.seq > next.reconcileSeq[domain]) {
+      next = next === prev ? { ...next } : next;
+      // Clone, never mutate: prev.reconcileSeq must keep its identity.
+      next.reconcileSeq = { ...next.reconcileSeq, [domain]: event.seq };
+    }
     if (next === prev) return;
     this.state = next;
     for (const l of this.listeners) l();
@@ -1677,10 +1757,3 @@ class Store {
 }
 
 export const store = new Store();
-
-export function useAppState(): AppState {
-  return useSyncExternalStore(
-    (cb) => store.subscribe(cb),
-    () => store.getState(),
-  );
-}

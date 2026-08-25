@@ -2,7 +2,10 @@
 //! ordering persistence, pause persistence, and crash-window recovery.
 
 use rusqlite::named_params;
-use saiwork_queue::model::{EnqueueRequest, QueueState, SessionMode, DISPATCH_CANDIDATE_PAGE_SIZE};
+use saiwork_queue::model::{
+    EnqueueRequest, QueueState, SessionMode, DISPATCH_CANDIDATE_PAGE_SIZE,
+    SNAPSHOT_ACTIVE_PAGE_SIZE,
+};
 use saiwork_queue::QueueRepo;
 use saiwork_storage::{Db, StorageError};
 
@@ -231,6 +234,45 @@ fn reorder_rejects_stale_revision() {
     r.reorder(&a.id, 1, 0).unwrap(); // current revision works
 }
 
+/// AUDIT-W2-002: EVERY row whose order_key changes bumps its revision
+/// exactly once — the adjacent swap partner and every shifted row of a
+/// non-adjacent move — and a displaced row's OLD revision must now fail CAS.
+#[test]
+fn reorder_bumps_revision_of_every_displaced_row() {
+    let db = seeded_in_memory();
+    let r = repo(&db);
+    let a = r.enqueue(&req("A")).unwrap();
+    let b = r.enqueue(&req("B")).unwrap();
+    let c = r.enqueue(&req("C")).unwrap();
+
+    // ---- adjacent move: reorder(B -> index 0) swaps A and B ----
+    r.reorder(&b.id, 1, 0).unwrap();
+    let (ra, rb, rc) = (r.get(&a.id).unwrap().unwrap(), r.get(&b.id).unwrap().unwrap(), r.get(&c.id).unwrap().unwrap());
+    assert_eq!(rb.revision, 2, "moved row +1");
+    assert_eq!(ra.revision, 2, "displaced partner must bump too");
+    assert_eq!(rc.revision, 1, "unaffected row untouched");
+    // Displaced row's stale token can no longer pass CAS: cancel with A's
+    // pre-reorder revision (1) must be a typed Conflict.
+    let err = r.cancel_queued(&a.id, 1).unwrap_err();
+    assert!(matches!(err, saiwork_queue::QueueError::Conflict { .. }), "got {err:?}");
+
+    // ---- non-adjacent move: reorder(C -> index 0) shifts A and B ----
+    // Current revisions are A=2,B=2,C=1; expected for C is 1.
+    r.reorder(&c.id, 1, 0).unwrap();
+    let (ra, rb, rc) = (r.get(&a.id).unwrap().unwrap(), r.get(&b.id).unwrap().unwrap(), r.get(&c.id).unwrap().unwrap());
+    assert_eq!(rc.revision, 2, "moved row exactly +1 (no double bump)");
+    assert_eq!(ra.revision, 3, "shifted row A +1");
+    assert_eq!(rb.revision, 3, "shifted row B +1");
+    // Order is C,B,A.
+    let snap = r.snapshot_page(0).unwrap();
+    let ids: Vec<_> = snap.items.iter().map(|i| i.payload.as_str()).collect();
+    assert_eq!(ids, ["C", "B", "A"]);
+
+    // A stale edit against B's pre-move revision (2) fails closed.
+    let err = r.edit(&b.id, 2, "x", None).unwrap_err();
+    assert!(matches!(err, saiwork_queue::QueueError::Conflict { .. }), "got {err:?}");
+}
+
 #[test]
 fn reorder_rejects_leased_and_done_items() {
     let db = seeded_in_memory();
@@ -417,9 +459,10 @@ fn snapshot_payload_is_bounded_preview_full_payload_via_get() {
         let item = r.enqueue(&req(&payload)).unwrap();
         ids.push(item.id);
     }
-    let snap = r.list_snapshot(10).unwrap();
-    // Every active row present (ordering/counts unchanged)…
-    assert_eq!(snap.len(), 200);
+    let snap = r.snapshot_page(0).unwrap().items;
+    // The active page is bounded by the snapshot page size (AUDIT-PERF-002);
+    // ordering/aggregates still describe all 200 durable rows…
+    assert_eq!(snap.len(), SNAPSHOT_ACTIVE_PAGE_SIZE);
     // …but payloads are bounded previews, never the 64 KiB bodies, and the
     // truncation flag tells the UI to render the ellipsis.
     for item in &snap {
@@ -441,6 +484,47 @@ fn snapshot_payload_is_bounded_preview_full_payload_via_get() {
 }
 
 #[test]
+fn active_snapshot_pages_are_bounded_with_exact_aggregate_counts() {
+    // AUDIT-PERF-002: payload previews alone are insufficient. A large live
+    // queue must not cross SQLite -> Rust -> IPC -> React in one snapshot,
+    // while the badge/counts must still describe ALL durable rows.
+    let db = seeded_in_memory();
+    let r = repo(&db);
+    let total = SNAPSHOT_ACTIVE_PAGE_SIZE * 2 + 5;
+    for i in 0..total {
+        r.enqueue(&req(&format!("active-{i:03}"))).unwrap();
+    }
+
+    let first = r.snapshot_page(0).unwrap();
+    assert_eq!(first.items.len(), SNAPSHOT_ACTIVE_PAGE_SIZE);
+    assert_eq!(first.counts.queued, total);
+    assert_eq!(first.counts.active(), total);
+    assert_eq!(first.active_offset, 0);
+    assert_eq!(first.queued_before, 0);
+    assert!(first.active_has_more);
+
+    let second = r.snapshot_page(SNAPSHOT_ACTIVE_PAGE_SIZE).unwrap();
+    assert_eq!(second.items.len(), SNAPSHOT_ACTIVE_PAGE_SIZE);
+    assert_eq!(second.counts.queued, total);
+    assert_eq!(second.active_offset, SNAPSHOT_ACTIVE_PAGE_SIZE);
+    assert_eq!(second.queued_before, SNAPSHOT_ACTIVE_PAGE_SIZE);
+    assert!(second.active_has_more);
+
+    let last = r.snapshot_page(SNAPSHOT_ACTIVE_PAGE_SIZE * 2).unwrap();
+    assert_eq!(last.items.len(), 5);
+    assert_eq!(last.active_offset, SNAPSHOT_ACTIVE_PAGE_SIZE * 2);
+    assert_eq!(last.queued_before, SNAPSHOT_ACTIVE_PAGE_SIZE * 2);
+    assert!(!last.active_has_more);
+
+    // A stale UI offset after the queue shrinks (or an untrusted huge IPC
+    // argument) is clamped to the last real page, never an empty lie.
+    let clamped = r.snapshot_page(usize::MAX).unwrap();
+    assert_eq!(clamped.active_offset, SNAPSHOT_ACTIVE_PAGE_SIZE * 2);
+    assert_eq!(clamped.items.len(), 5);
+    assert_eq!(clamped.counts.queued, total);
+}
+
+#[test]
 fn snapshot_preview_trims_a_split_multibyte_character() {
     // 3-byte "界": 171 chars = 513 bytes > 512-byte preview → the SQL
     // byte-cut lands MID-CHARACTER (170 chars + 2 bytes). The snapshot
@@ -450,7 +534,7 @@ fn snapshot_preview_trims_a_split_multibyte_character() {
     let r = repo(&db);
     let payload = "界".repeat(171);
     let item = r.enqueue(&req(&payload)).unwrap();
-    let snap = r.list_snapshot(10).unwrap();
+    let snap = r.snapshot_page(0).unwrap().items;
     assert_eq!(snap[0].payload, "界".repeat(170));
     assert!(snap[0].payload_truncated);
     assert!(snap[0].payload.len() <= saiwork_queue::model::PAYLOAD_PREVIEW_BYTES);
@@ -465,7 +549,7 @@ fn snapshot_small_payloads_are_byte_identical() {
     let db = seeded_in_memory();
     let r = repo(&db);
     r.enqueue(&req("hello world")).unwrap();
-    let snap = r.list_snapshot(10).unwrap();
+    let snap = r.snapshot_page(0).unwrap().items;
     assert_eq!(snap[0].payload, "hello world");
     assert!(!snap[0].payload_truncated);
 }
@@ -478,7 +562,7 @@ fn snapshot_preview_boundary_exact_length_is_not_truncated() {
     let r = repo(&db);
     let exact = "a".repeat(saiwork_queue::model::PAYLOAD_PREVIEW_BYTES);
     r.enqueue(&req(&exact)).unwrap();
-    let snap = r.list_snapshot(10).unwrap();
+    let snap = r.snapshot_page(0).unwrap().items;
     assert_eq!(snap[0].payload, exact);
     assert!(!snap[0].payload_truncated);
 }
@@ -495,11 +579,11 @@ fn list_snapshot_succeeds_on_empty_active_and_mixed_terminal_db() {
     let r = repo(&db);
 
     // Empty DB.
-    assert!(r.list_snapshot(50).unwrap().is_empty());
+    assert!(r.snapshot_page(0).unwrap().items.is_empty());
 
     // Active-only DB: one queued item, history branch untouched.
     let active = r.enqueue(&req("active")).unwrap();
-    let snap = r.list_snapshot(50).unwrap();
+    let snap = r.snapshot_page(0).unwrap().items;
     assert_eq!(snap.len(), 1);
     assert_eq!(snap[0].id, active.id);
 
@@ -515,7 +599,7 @@ fn list_snapshot_succeeds_on_empty_active_and_mixed_terminal_db() {
                 .unwrap()
         );
     }
-    let snap = r.list_snapshot(50).unwrap();
+    let snap = r.snapshot_page(0).unwrap().items;
     // 1 active + bounded 50 terminal (history_limit).
     assert_eq!(snap.len(), 51, "1 active + 50 terminal history");
     // Terminal portion ordered updated_at DESC (newest first).
@@ -600,7 +684,7 @@ fn incremental_get_item_matches_snapshot_membership() {
             .unwrap()
     );
 
-    let snap = r.list_snapshot(50).unwrap();
+    let snap = r.snapshot_page(0).unwrap().items;
     let from_snap = snap
         .iter()
         .find(|i| i.id == term.id)
@@ -613,6 +697,35 @@ fn incremental_get_item_matches_snapshot_membership() {
     // Active item is authoritative by id too.
     let active_get = r.get(&active.id).unwrap().expect("active reachable by id");
     assert_eq!(active_get.state, QueueState::Queued);
+}
+
+#[test]
+fn purge_terminal_removes_history_but_preserves_active_and_unknown_work() {
+    let db = seeded_in_memory();
+    let r = repo(&db);
+    let queued = r.enqueue(&req("queued")).unwrap();
+    let done = r.enqueue(&req("done")).unwrap();
+    let cancelled = r.enqueue(&req("cancelled")).unwrap();
+    let unknown = r.enqueue(&req("unknown")).unwrap();
+
+    assert!(r.claim(&done.id).unwrap());
+    assert!(r.begin_send(&done.id, "run-done").unwrap());
+    assert!(r.mark_dispatched(&done.id, "run-done").unwrap());
+    assert!(r
+        .mark_terminal(&done.id, "run-done", QueueState::Done, None, None)
+        .unwrap());
+    assert!(r.cancel_queued(&cancelled.id, cancelled.revision).unwrap());
+    assert!(r.claim(&unknown.id).unwrap());
+    assert!(r
+        .mark_unknown_leased(&unknown.id, None, "unknown", "execution uncertain")
+        .unwrap());
+
+    assert_eq!(r.purge_terminal().unwrap(), 2);
+    assert!(r.get(&done.id).unwrap().is_none());
+    assert!(r.get(&cancelled.id).unwrap().is_none());
+    assert_eq!(r.get(&queued.id).unwrap().unwrap().state, QueueState::Queued);
+    assert_eq!(r.get(&unknown.id).unwrap().unwrap().state, QueueState::Unknown);
+    assert_eq!(r.purge_terminal().unwrap(), 0, "cleanup is idempotent");
 }
 
 // AUDIT-W2-003: enqueue verifies the referenced workspace INSIDE the insert

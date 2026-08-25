@@ -287,8 +287,12 @@ lands (TASK 16).
 
 ## Queue events (TASK 13)
 
-- `queue.changed { item_id, state }` — emitted after every committed SQLite
-transition (QUEUED/LEASED/DISPATCHED/DONE/FAILED/CANCELLED).
+- `queue.changed { item_id?, state }` — emitted after every committed SQLite
+  transition (QUEUED/LEASED/DISPATCHED/DONE/FAILED/CANCELLED). `item_id`
+  names the single row the change is attributable to so consumers can patch
+  just that row; a REORDER carries `item_id = null` (AUDIT-W2-001): no single
+  row describes the collection mutation, and consumers MUST invalidate the
+  whole queue projection (authoritative full snapshot) instead.
 - `queue.dispatch_started { item_id }` — after `DISPATCHED` commit (run_id
   associated) and before/at run tracking.
 - `queue.dispatch_completed { item_id }` — after the authoritative run

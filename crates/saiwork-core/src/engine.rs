@@ -501,6 +501,17 @@ pub struct EngineRegistry {
     leases: Mutex<HashMap<String, Arc<tokio::sync::RwLock<()>>>>,
 }
 
+/// One adapter that did not complete its shutdown contract. Engine identity
+/// stays attached so App shutdown can report honest cleanup evidence instead
+/// of logging the failure and returning `clean`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EngineStopFailure {
+    pub engine_id: String,
+    pub message: String,
+}
+
+const ENGINE_STOP_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
+
 impl EngineRegistry {
     pub fn new(
         bus: EventBus,
@@ -898,22 +909,62 @@ impl EngineRegistry {
     /// (attempt-all) and every failure is retained; per-engine lifecycle
     /// ordering is unchanged. App owns the registry as `Arc`, which this
     /// signature requires for concurrent `'static` stop tasks.
-    pub async fn stop_all(self: &Arc<Self>) {
+    pub async fn stop_all(self: &Arc<Self>) -> Vec<EngineStopFailure> {
+        self.stop_all_with_timeout(ENGINE_STOP_TIMEOUT).await
+    }
+
+    /// Registry-level deadline around every adapter stop. Adapter and
+    /// ProcessSupervisor timeouts remain the detailed cleanup policy, but an
+    /// adapter bug must not prevent App shutdown from reaching the
+    /// supervisor's final force sweep.
+    async fn stop_all_with_timeout(
+        self: &Arc<Self>,
+        stop_timeout: std::time::Duration,
+    ) -> Vec<EngineStopFailure> {
         let ids: Vec<String> = self.list().into_iter().map(|i| i.id).collect();
         let mut handles = Vec::with_capacity(ids.len());
         for id in ids {
             let this = self.clone();
-            handles.push(tokio::spawn(
-                async move { (id.clone(), this.stop(&id).await) },
+            let task_id = id.clone();
+            handles.push((
+                id,
+                tokio::spawn(async move {
+                    tokio::time::timeout(stop_timeout, this.stop(&task_id)).await
+                }),
             ));
         }
-        for handle in handles {
+        let mut failures = Vec::new();
+        for (id, handle) in handles {
             match handle.await {
-                Ok((_id, Ok(()))) => {}
-                Ok((id, Err(e))) => warn!(engine = %id, error = %e, "engine stop failed"),
-                Err(e) => warn!(error = %e, "engine stop task failed to join"),
+                Ok(Ok(Ok(()))) => {}
+                Ok(Ok(Err(error))) => {
+                    warn!(engine = %id, error = %error, "engine stop failed");
+                    failures.push(EngineStopFailure {
+                        engine_id: id,
+                        message: error.to_string(),
+                    });
+                }
+                Ok(Err(_elapsed)) => {
+                    let message = format!(
+                        "stop timed out after {} ms; final process force sweep continues",
+                        stop_timeout.as_millis()
+                    );
+                    warn!(engine = %id, error = %message, "engine stop timed out");
+                    failures.push(EngineStopFailure {
+                        engine_id: id,
+                        message,
+                    });
+                }
+                Err(error) => {
+                    warn!(engine = %id, error = %error, "engine stop task failed to join");
+                    failures.push(EngineStopFailure {
+                        engine_id: id,
+                        message: format!("stop task failed to join: {error}"),
+                    });
+                }
             }
         }
+        failures
     }
 
     /// Build an `EngineStartContext` for an engine. The failure hook is a
@@ -1015,6 +1066,8 @@ mod tests {
         Failed,
         /// The adapter actually stopped but still reported an error.
         Stopped,
+        /// The adapter's stop future never resolves.
+        Hanging,
     }
 
     struct StopFailingEngine {
@@ -1071,6 +1124,7 @@ mod tests {
                         "stop reported an error but stopped",
                     ))
                 }
+                StopFailureHealth::Hanging => std::future::pending().await,
             }
         }
 
@@ -1206,6 +1260,25 @@ mod tests {
             // retry stop returns the same typed error (not a stuck state).
             let _ = reg.stop(id).await;
         }
+    }
+
+    #[tokio::test]
+    async fn stop_all_bounds_hanging_adapter_and_returns_failure_evidence() {
+        let (registry, _bus) = registry();
+        registry.register(Arc::new(StopFailingEngine::new(
+            "stop-hangs",
+            StopFailureHealth::Hanging,
+        )));
+
+        let started = std::time::Instant::now();
+        let failures = registry
+            .stop_all_with_timeout(std::time::Duration::from_millis(25))
+            .await;
+
+        assert!(started.elapsed() < std::time::Duration::from_secs(1));
+        assert_eq!(failures.len(), 1);
+        assert_eq!(failures[0].engine_id, "stop-hangs");
+        assert!(failures[0].message.contains("timed out"));
     }
 
     /// Fake adapter with an externally-settable health, so tests can drive the

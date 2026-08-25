@@ -680,6 +680,7 @@ impl RunRecord {
             bus.publish(Event::MessageStarted {
                 session_id: self.session_id.clone().into(),
                 run_id: self.run_id.clone(),
+                model: self.model.clone(),
             });
         }
     }
@@ -731,6 +732,7 @@ mod tests {
         Arc::new(RunRecord {
             run_id: RunId::new(String::from("run-test")),
             session_id: session_id.into(),
+            model: None,
             engine_session_id: session_id.into(),
             generation: 0,
             cancel_requested: AtomicBool::new(false),

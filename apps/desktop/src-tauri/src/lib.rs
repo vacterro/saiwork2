@@ -125,6 +125,7 @@ pub fn run() {
             commands::queue_pause,
             commands::queue_resume,
             commands::queue_retry,
+            commands::queue_purge_terminal,
             commands::files_list_dir,
             commands::files_read_preview,
         ])

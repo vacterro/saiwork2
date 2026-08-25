@@ -38,7 +38,7 @@ use tracing::{info, warn};
 
 use crate::model::{
     EnqueueRequest, PortError, QueueDiagnostics, QueueError, QueueItem, QueueSnapshot, QueueState,
-    QueueStatus, SessionMode, DISPATCH_CANDIDATE_PAGE_SIZE,
+    QueueStatus, SessionMode, DISPATCH_CANDIDATE_PAGE_SIZE, SNAPSHOT_ACTIVE_PAGE_SIZE,
 };
 use crate::port::{DispatchReceipt, EnginePort, EngineState, SessionCreateOutcome};
 use crate::repo::QueueRepo;
@@ -223,12 +223,17 @@ impl QueueManager {
         self.paused.load(Ordering::SeqCst)
     }
 
-    pub fn snapshot(&self) -> Result<QueueSnapshot, QueueError> {
-        let items = self.repo.list_snapshot(50)?;
+    pub fn snapshot(&self, active_offset: usize) -> Result<QueueSnapshot, QueueError> {
+        let page = self.repo.snapshot_page(active_offset)?;
         Ok(QueueSnapshot {
             status: self.status(),
             paused: self.is_paused(),
-            items,
+            items: page.items,
+            counts: page.counts,
+            active_offset: page.active_offset,
+            active_limit: SNAPSHOT_ACTIVE_PAGE_SIZE,
+            queued_before: page.queued_before,
+            active_has_more: page.active_has_more,
             payload_preview: true,
         })
     }
@@ -323,7 +328,9 @@ impl QueueManager {
     ) -> Result<(), QueueError> {
         self.require_usable()?;
         self.repo.reorder(id, expected_revision, new_index)?;
-        self.publish_changed(id, QueueState::Queued);
+        // AUDIT-W2-001: reorder is a collection mutation (displaced rows get
+        // new order_keys AND revisions) — never a single-row event.
+        self.publish_collection_invalidated();
         self.wake.notify_one();
         Ok(())
     }
@@ -523,6 +530,17 @@ impl QueueManager {
         Ok(())
     }
 
+    /// Explicit history cleanup. This never cancels work and never resolves
+    /// UNKNOWN: only already-terminal evidence is physically removed.
+    pub fn purge_terminal(&self) -> Result<usize, QueueError> {
+        self.require_usable()?;
+        let removed = self.repo.purge_terminal()?;
+        if removed > 0 {
+            self.publish_collection_invalidated();
+        }
+        Ok(removed)
+    }
+
     // ---- shutdown ----
 
     /// Phase 1: stop claiming new items and release safe leases. Active runs
@@ -618,8 +636,21 @@ impl QueueManager {
 
     fn publish_changed(&self, item_id: &str, state: QueueState) {
         self.bus.publish(Event::QueueChanged {
-            item_id: QueueItemId::new(item_id),
+            item_id: Some(QueueItemId::new(item_id)),
             state: state.as_str().into(),
+        });
+    }
+
+    /// AUDIT-W2-001: a REORDER changes many rows' ordering (and now their CAS
+    /// revisions) while no single row describes the mutation. Publishing a
+    /// named item made the frontend take the one-row patch path and leave the
+    /// visible queue stale; `item_id = None` is the explicit
+    /// collection-invalidation contract that routes consumers to an
+    /// authoritative full snapshot.
+    fn publish_collection_invalidated(&self) {
+        self.bus.publish(Event::QueueChanged {
+            item_id: None,
+            state: QueueState::Queued.as_str().into(),
         });
     }
 
@@ -1312,23 +1343,21 @@ impl QueueManager {
         self.wake.notified().await;
     }
 
-    /// Bounded cancellable backoff: sleeps `delay`, polling the shutdown
-    /// flags on a short tick so pause/shutdown cancels the retry promptly
-    /// (TASK 24 §9 — a transient dependency error never spins and never
-    /// outlives shutdown). Returns false when the worker should stop.
+    /// Bounded cancellable backoff (AUDIT-PERF-006): one `tokio::select!`
+    /// between the deadline sleep and the dedicated `stop_signal` Notify —
+    /// no timer polling. Shutdown/fail-closed notifies the stop signal, so a
+    /// transient dependency backoff ends immediately on stop instead of at
+    /// the next tick, while an ordinary backoff still waits the FULL
+    /// configured delay (never early, never spinning). Returns false when
+    /// the worker should stop.
+    ///
+    /// Wakeup-safety: `Notify` remembers a permit, so a stop that fires
+    /// BEFORE this future parks is observed without a lost wakeup. The
+    /// dispatcher is the sole backoff owner; if multiple waiters are ever
+    /// introduced, that ownership must be made explicit rather than
+    /// restoring polling.
     async fn backoff_sleep(&self, delay: Duration) -> bool {
-        let deadline = tokio::time::Instant::now() + delay;
-        let mut tick = tokio::time::interval(Duration::from_millis(50));
-        tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-        loop {
-            if self.stopping.load(Ordering::SeqCst) || self.stopped.load(Ordering::SeqCst) {
-                return false;
-            }
-            if tokio::time::Instant::now() >= deadline {
-                return true;
-            }
-            tick.tick().await;
-        }
+        stop_aware_backoff(&self.stop_signal, &self.stopping, &self.stopped, delay).await
     }
 
     // ---- coordinator (run terminal correlation, §120–§121) ----
@@ -1695,5 +1724,75 @@ impl QueueManager {
     #[doc(hidden)]
     pub fn set_repo_failpoints_for_test(&self, failpoints: crate::repo::RepoFailpoints) {
         self.repo.set_failpoints_for_test(failpoints);
+    }
+}
+
+/// AUDIT-PERF-006: pure stop-aware backoff primitive — one select between the
+/// deadline and the dedicated stop Notify (no interval polling). Unit-tested
+/// below; `QueueManager::backoff_sleep` delegates to it.
+async fn stop_aware_backoff(
+    stop_signal: &tokio::sync::Notify,
+    stopping: &AtomicBool,
+    stopped: &AtomicBool,
+    delay: Duration,
+) -> bool {
+    if stopping.load(Ordering::SeqCst) || stopped.load(Ordering::SeqCst) {
+        return false;
+    }
+    tokio::select! {
+        _ = tokio::time::sleep(delay) => true,
+        _ = stop_signal.notified() => false,
+    }
+}
+
+#[cfg(test)]
+mod backoff_tests {
+    use super::*;
+
+    fn flags() -> (AtomicBool, AtomicBool) {
+        (AtomicBool::new(false), AtomicBool::new(false))
+    }
+
+    /// An ordinary backoff waits the FULL configured delay when nothing stops.
+    #[tokio::test]
+    async fn backoff_completes_only_after_full_delay() {
+        let notify = tokio::sync::Notify::new();
+        let (stopping, stopped) = flags();
+        let started = std::time::Instant::now();
+        let ok = stop_aware_backoff(&notify, &stopping, &stopped, Duration::from_millis(120)).await;
+        assert!(ok);
+        assert!(started.elapsed() >= Duration::from_millis(110));
+    }
+
+    /// A mid-backoff stop ends it immediately (no 50 ms quantum wait).
+    #[tokio::test]
+    async fn backoff_is_cancelled_by_midway_stop() {
+        let notify = Arc::new(tokio::sync::Notify::new());
+        let (stopping, stopped) = flags();
+        let waiter = {
+            let notify = notify.clone();
+            tokio::spawn(async move {
+                stop_aware_backoff(&notify, &stopping, &stopped, Duration::from_secs(30)).await
+            })
+        };
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        let t = std::time::Instant::now();
+        notify.notify_one();
+        assert!(!tokio::time::timeout(Duration::from_secs(2), waiter).await.unwrap().unwrap());
+        assert!(t.elapsed() < Duration::from_millis(500), "stop must end the backoff immediately");
+    }
+
+    /// Permit semantics: a stop that fired BEFORE the waiter parks still
+    /// cancels it (no lost wakeup).
+    #[tokio::test]
+    async fn pre_stop_permit_cancels_without_lost_wakeup() {
+        let notify = tokio::sync::Notify::new();
+        let (stopping, stopped) = flags();
+        notify.notify_one();
+        let ok =
+            tokio::time::timeout(Duration::from_secs(2), stop_aware_backoff(&notify, &stopping, &stopped, Duration::from_secs(30)))
+                .await
+                .expect("permit must resolve immediately");
+        assert!(!ok);
     }
 }
