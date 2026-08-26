@@ -159,6 +159,17 @@ export interface AppState {
   favoritesOnly: boolean;
   sessions: Session[];
   activeSessionId: string | null;
+  /** T-126: workspace ids ordered most-recently-opened first (bounded ring).
+   * Pure UI ordering — the authoritative workspace list stays `workspaces`;
+   * this only decides the sidebar's display order and persists across
+   * restarts via `ui.recents.v1`. Ids of forgotten workspaces are filtered at
+   * render time, never stored-authoritative. */
+  recentWorkspaceIds: string[];
+  /** T-126: sessionId → completed answers that landed while the session was
+   * NOT the active one (the "answer ready" badge). Cleared when the session
+   * is activated. Bounded: at most MAX_UNREAD_ANSWERS entries, oldest dropped
+   * (law: no unbounded maps). */
+  unreadAnswers: Record<string, number>;
   /** sessionId → COMPLETED transcript (append-only, bounded per message).
    *
    * INVARIANT (stream hot path): this array's identity is STABLE while a run
@@ -266,6 +277,8 @@ export const initialState: AppState = {
   favoritesOnly: false,
   sessions: [],
   activeSessionId: null,
+  recentWorkspaceIds: [],
+  unreadAnswers: {},
   messages: {},
   activeMessage: {},
   reconcileSeq: { sessions: 0, engines: 0, runs: 0 },
@@ -360,6 +373,32 @@ const LOG_WORTHY = new Set<string>([
 
 export function isSessionInScope(state: AppState, sessionId: string): boolean {
   return state.sessions.some((s) => s.id === sessionId);
+}
+
+/** T-126: hard bound for the unread-answer badge map (law: no unbounded
+ * maps). Sessions are backend-bounded, but a long-lived app can accumulate
+ * deleted-session keys; the OLDEST entry (insertion order) is dropped first.
+ * The active session's key is never inserted by the reducer, so the bound
+ * only ever trims stale keys. */
+export const MAX_UNREAD_ANSWER_ENTRIES = 64;
+
+export function boundUnreadAnswers(
+  unread: Record<string, number>,
+): Record<string, number> {
+  const keys = Object.keys(unread);
+  if (keys.length <= MAX_UNREAD_ANSWER_ENTRIES) return unread;
+  const bounded: Record<string, number> = {};
+  for (const key of keys.slice(keys.length - MAX_UNREAD_ANSWER_ENTRIES)) {
+    bounded[key] = unread[key]!;
+  }
+  return bounded;
+}
+
+/** T-126: clear one session's unread-answer badge (session activation). */
+export function clearUnreadAnswers(state: AppState, sessionId: string | null): AppState {
+  if (!sessionId || !(sessionId in state.unreadAnswers)) return state;
+  const { [sessionId]: _drop, ...rest } = state.unreadAnswers;
+  return { ...state, unreadAnswers: rest };
 }
 
 /** AUDIT-W2-004: which reconcile-owned projection an event can invalidate.
@@ -704,9 +743,17 @@ export function applyEvent(state: AppState, event: TypedEvent): AppState {
       // for that message only — it must never clear the running state of a
       // NEWER run the backend still owns.
       const clearsRun = state.running[sessionId] === runId;
+      // T-126: an answer that completed while its session was NOT the active
+      // one is an unread answer — badge it so the user sees it landed. The
+      // ACTIVE session needs no badge (the answer is on screen).
+      const unreadAnswers =
+        sessionId !== state.activeSessionId
+          ? boundUnreadAnswers({ ...state.unreadAnswers, [sessionId]: (state.unreadAnswers[sessionId] ?? 0) + 1 })
+          : state.unreadAnswers;
       return {
         ...state,
         ...commitTerminal(state, sessionId, runId, (m) => ({ ...m, status: "complete" })),
+        unreadAnswers,
         running: clearsRun ? { ...state.running, [sessionId]: null } : state.running,
         sessions: clearsRun
           ? state.sessions.map((s) => (s.id === sessionId ? { ...s, running: false } : s))

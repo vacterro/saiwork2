@@ -48,11 +48,23 @@ describe("subscribeToCoreEvents lifecycle (T-075)", () => {
     await expect(sub.ready).resolves.toBeUndefined();
   });
 
-  it("every attempt failing on a LIVE session rejects with the real error (only rejecting path)", async () => {
+  it("persistent failures NEVER reject — warn once into the store, keep retrying (T-127)", async () => {
     const { subscribeToCoreEvents } = await import("./backend");
-    listenImpl = () => Promise.reject(new Error("plumbing dead"));
+    const { store } = await import("../state/store");
+    let listens = 0;
+    listenImpl = () => {
+      listens++;
+      // Fail through the warn threshold (attempt 4 = 5th try), then succeed:
+      // the reconnect loop must still be alive after the warning has fired.
+      return listens <= 5 ? Promise.reject(new Error("transient")) : Promise.resolve(() => {});
+    };
     const sub = subscribeToCoreEvents();
-    await expect(sub.ready).rejects.toThrow("plumbing dead");
+    // Fast-phase backoff caps at 2000ms, so 8 attempts settle in seconds.
+    await expect(sub.ready).resolves.toBeUndefined();
+    // The failure was surfaced exactly once (never silently, never a reject).
+    expect(store.getState().lastError).toContain("reconnecting");
+    sub.dispose();
+    expect(listens).toBeGreaterThan(5);
   });
 
   it("success path resolves and dispose detaches exactly once", async () => {

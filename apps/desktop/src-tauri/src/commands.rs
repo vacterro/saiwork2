@@ -440,12 +440,12 @@ pub fn pending_questions(
 
 #[tauri::command]
 pub fn queue_get_item(
-    id: String,
+    item_id: String,
     core: State<'_, Arc<App>>,
 ) -> CmdResult<saiwork_queue::QueueItem> {
     // Full durable item (exact payload) for editing/inspecting ONE row — the
     // snapshot carries only bounded payload previews (TASK 24 perf).
-    core.queue.get_item(&id).map_err(err)
+    core.queue.get_item(&item_id).map_err(err)
 }
 
 #[tauri::command]

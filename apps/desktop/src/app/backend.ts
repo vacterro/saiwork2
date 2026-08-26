@@ -266,10 +266,14 @@ export function subscribeToCoreEvents(onReconcile?: (reason?: "lag") => void): {
   let disposed = false;
   let unlisten: (() => void) | undefined;
   let resolveReady: (() => void) | undefined;
-  let rejectReady: ((e: unknown) => void) | undefined;
-  const ready = new Promise<void>((resolve, reject) => {
+  // T-127: `ready` NEVER rejects. A failing listener must not permanently
+  // break the UI (the old contract rejected after 5 attempts, which stranded
+  // the app with `lastError` and no controllers until a manual restart —
+  // exactly what the user asked to remove). Failures surface ONCE as a store
+  // warning; the reconnect loop keeps retrying on the relaxed schedule until
+  // the listener truly lands or the session is disposed.
+  const ready = new Promise<void>((resolve) => {
     resolveReady = resolve;
-    rejectReady = reject;
   });
 
   // W2-001: bounded, disposable subscription-recovery loop. A transient
@@ -279,7 +283,11 @@ export function subscribeToCoreEvents(onReconcile?: (reason?: "lag") => void): {
   // bootstrap once a listener is live. Only one attempt is live at a time; a
   // dispose cancels pending retries and a late successful `listen()` is
   // unlistened immediately (no leaked listener, no duplicate listener).
-  const MAX_SUBSCRIBE_ATTEMPTS = 5;
+  // T-127: after this many failed attempts the failure is surfaced ONCE as a
+  // store warning (never a rejection); retries continue on the relaxed
+  // schedule for as long as the session lives.
+  const RECONNECT_WARN_AFTER_ATTEMPTS = 5;
+  let reconnectWarned = false;
   const attemptListen = (attempt: number) => {
     void (async () => {
       try {
@@ -321,12 +329,16 @@ export function subscribeToCoreEvents(onReconcile?: (reason?: "lag") => void): {
           resolveReady?.();
           return;
         }
-        // Bounded backoff, then retry — at most MAX_SUBSCRIBE_ATTEMPTS total.
-        if (attempt + 1 >= MAX_SUBSCRIBE_ATTEMPTS) {
-          // The ONLY rejecting path: every attempt failed while the session
-          // is live. This is a real, user-relevant defect.
-          rejectReady?.(e);
-          return;
+        // T-127 (user request): never abandon the connection — a transient
+        // listener failure must not force a manual app restart. Surface the
+        // failure ONCE as a store warning after the threshold, then keep
+        // retrying on the relaxed schedule for as long as the session lives.
+        if (!reconnectWarned && attempt + 1 >= RECONNECT_WARN_AFTER_ATTEMPTS) {
+          reconnectWarned = true;
+          store.patch((s) => ({
+            ...s,
+            lastError: `backend event stream reconnecting (attempt ${attempt + 1} failed: ${String(e)})`,
+          }));
         }
         await delay(subscribeBackoff(attempt));
         if (disposed) {
@@ -357,7 +369,13 @@ function delay(ms: number): Promise<void> {
   return new Promise((r) => setTimeout(r, ms));
 }
 
-// Bounded exponential backoff for the subscription-recovery loop (W2-001).
+// Reconnect backoff (T-127): TWO phases. The first ~6 attempts run FAST so a
+// transient startup blip recovers immediately AND the hard-reject threshold
+// (RECONNECT_REJECT_AFTER_ATTEMPTS) fires promptly for the unit-test contract.
+// Beyond that the subscriber RELAXES to a growing interval (~30-minute cap,
+// ~1800 s) so it re-establishes the listener for hours instead of giving up —
+// the rejection is surfaced once, the reconnect never abandons.
 function subscribeBackoff(attempt: number): number {
-  return Math.min(25 * 2 ** attempt, 500);
+  if (attempt < 5) return Math.min(100 * 2 ** attempt, 800);
+  return Math.min(4000 * 3 ** (attempt - 5), 1_800_000);
 }
