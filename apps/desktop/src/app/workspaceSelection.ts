@@ -25,6 +25,7 @@ import { mutationsAllowed } from "../app/eligibility";
 import type { SaipenState, Session, WorkspaceSummary } from "@saiwork2/contracts";
 import { commands } from "./backend";
 import { activateSession } from "./sessionSelection";
+import { bumpRecentWorkspace } from "./recentProjects";
 import { requestEngineAutoStart } from "./engineAutoStart";
 
 let selectionToken = 0;
@@ -116,6 +117,9 @@ export async function selectWorkspace(
   // sessions/SAIPEN in one transition. There is no intermediate state in
   // which workspace B is current while A's sessions are still listed.
   store.patch((s) => rescope(s, workspace.id, upsertWorkspace(s.workspaces, workspace)));
+  // T-126: this project is now the most-recently-opened one (sidebar order +
+  // persisted across restarts).
+  bumpRecentWorkspace(workspace.id);
 
   store.patch((s) => {
     // Defensive: the epoch guard above already proves this, but the id is

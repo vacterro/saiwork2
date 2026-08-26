@@ -5,7 +5,11 @@ import { commands, confirmDialog, pickFolder } from "../app/backend";
 import { clearWorkspaceSelection, selectWorkspace } from "../app/workspaceSelection";
 
 /** One definition of what this panel consumes (state/slices.ts). */
-export const projectSidebarKeys = ["workspaces", "currentWorkspaceId"] as const;
+export const projectSidebarKeys = [
+  "workspaces",
+  "currentWorkspaceId",
+  "recentWorkspaceIds",
+] as const;
 
 interface Props extends SliceProps<(typeof projectSidebarKeys)[number]> {
   /** Destructive-action confirmation (T-014). Defaults to the native Tauri
@@ -71,6 +75,20 @@ export function ProjectSidebar({ state, onError, confirmForget }: Props) {
     }
   }
 
+  // T-126: display order = most-recently-opened first. The authoritative
+  // workspace list is never reordered in place — this is a pure projection:
+  // known-recency ids first (newest first), then never/beyond-ring projects in
+  // their authoritative order. Forgotten ids drop out naturally (filtered).
+  const recency = new Map(state.recentWorkspaceIds.map((id, idx) => [id, idx]));
+  const ordered = [...state.workspaces].sort((a, b) => {
+    const ra = recency.get(a.id);
+    const rb = recency.get(b.id);
+    if (ra !== undefined && rb !== undefined) return ra - rb;
+    if (ra !== undefined) return -1;
+    if (rb !== undefined) return 1;
+    return 0;
+  });
+
   return (
     <aside className="sidebar">
       <div className="sidebar__header">
@@ -80,7 +98,7 @@ export function ProjectSidebar({ state, onError, confirmForget }: Props) {
         </button>
       </div>
       <ul className="sidebar__list">
-        {state.workspaces.map((w) => (
+        {ordered.map((w) => (
           <li
             key={w.id}
             className={w.id === state.currentWorkspaceId ? "sidebar__item sidebar__item--active" : "sidebar__item"}

@@ -805,7 +805,7 @@ impl App {
     /// (`core.active_workspace`, `queue.paused`, `ui.models.favorites`,
     /// security-relevant `saipen.trusted_home`) stay behind their dedicated
     /// commands/snapshots and must never leak through the generic path.
-    pub const GENERIC_UI_SETTING_KEYS: &[&str] = &["ui.layout.v1", "ui.engine.v1"];
+    pub const GENERIC_UI_SETTING_KEYS: &[&str] = &["ui.layout.v1", "ui.engine.v1", "ui.recents.v1"];
 
     /// Ownership guard for the generic settings read path.
     pub fn ensure_generic_ui_setting(key: &str) -> Result<(), CoreError> {
@@ -1626,7 +1626,7 @@ mod tests {
     fn generic_setting_reads_reject_typed_owner_and_unknown_keys() {
         // AUDIT-CORE-004: generic UI prefs stay readable; typed-owner,
         // internal, security-relevant, unknown and empty keys are not.
-        for key in ["ui.layout.v1", "ui.engine.v1"] {
+        for key in ["ui.layout.v1", "ui.engine.v1", "ui.recents.v1"] {
             assert!(App::ensure_generic_ui_setting(key).is_ok(), "{key}");
         }
         for key in [

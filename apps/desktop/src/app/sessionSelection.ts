@@ -7,7 +7,7 @@
 // second, drifting selection path. This module is the single owner.
 
 import { commands } from "./backend";
-import { hydrateSessionHistory, setHistoryStatus, store } from "../state/store";
+import { clearUnreadAnswers, hydrateSessionHistory, setHistoryStatus, store } from "../state/store";
 import { currentSelectionEpoch, isCurrentEpoch } from "./workspaceSelection";
 
 /** Monotonic per-session read generation: a slow history read for session A
@@ -26,7 +26,9 @@ const historyGeneration = new Map<string, number>();
 export function activateSession(id: string | null): void {
   const current = store.getState().activeSessionId;
   if (current === id) return;
-  store.patch((s) => ({ ...s, activeSessionId: id }));
+  // T-126: activating a session clears its unread-answer badge — the user is
+  // looking at the thread now.
+  store.patch((s) => clearUnreadAnswers({ ...s, activeSessionId: id }, id));
   if (id !== null) void loadSessionHistory(id);
 }
 

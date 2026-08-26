@@ -460,6 +460,19 @@ a, a:link, a:visited {
   font-size: 12px;
 }
 
+/* T-126: unread-answer badge — same Win95 chip language as sidebar__badge,
+ * accent-gold fill so it reads as "something landed" at a glance. */
+.sessions__badge {
+  font-size: 10px;
+  background: var(--accentGold);
+  color: var(--borderDark);
+  border: 1px solid var(--borderMuted);
+  border-radius: 0px;
+  padding: 0 4px;
+  line-height: 1.3;
+  font-weight: bold;
+}
+
 .sessions__item-meta {
   font-family: var(--mono);
   font-size: 10px;

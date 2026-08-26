@@ -36,6 +36,7 @@ import { installModelCatalog, restoreEngineState } from "./modelCatalog";
 import { installQueueSync, requestQueueSnapshot } from "./queueSync";
 import { activateSession, loadSessionHistory } from "./sessionSelection";
 import { loadUiLayout } from "../components/dock/persistence";
+import { loadRecentProjects } from "./recentProjects";
 
 export interface FrontendSession {
   /** Resolves when the event subscription is installed (or its failure was
@@ -70,36 +71,33 @@ export function startFrontendSession(
   // been torn down — leaving live controllers with no owner (T-044).
   let disposed = false;
 
-  const ready = subscription.ready.then(
-    () => {
-      const d1 = installModelCatalog();
-      const d2 = installQueueSync(onError);
-      void coldBootstrap(onError);
-      void loadUiLayout();
-      if (disposed) {
-        // Session disposed before ready resolved: tear the just-installed
-        // controllers down immediately so exactly zero controllers leak.
-        try {
-          d1();
-        } catch {
-          /* ignore */
-        }
-        try {
-          d2();
-        } catch {
-          /* ignore */
-        }
-        return;
+  const ready = subscription.ready.then(() => {
+    const d1 = installModelCatalog();
+    const d2 = installQueueSync(onError);
+    void coldBootstrap(onError);
+    void loadUiLayout();
+    void loadRecentProjects();
+    if (disposed) {
+      // Session disposed before ready resolved: tear the just-installed
+      // controllers down immediately so exactly zero controllers leak.
+      try {
+        d1();
+      } catch {
+        /* ignore */
       }
-      disposers.push(d1, d2);
-    },
-    (e) => {
-      store.patch((s) => ({
-        ...s,
-        lastError: `backend event subscription failed: ${String(e)}`,
-      }));
-    },
-  );
+      try {
+        d2();
+      } catch {
+        /* ignore */
+      }
+      return;
+    }
+    disposers.push(d1, d2);
+  });
+  // T-127: `subscription.ready` never rejects (failures surface as a store
+  // warning inside the bridge while the reconnect loop keeps retrying), so no
+  // rejection arm exists here — a rejected-arm here would be dead code and the
+  // UI would strand on a `lastError` instead of reconnecting.
 
   return {
     ready,

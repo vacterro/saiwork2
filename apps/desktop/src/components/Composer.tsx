@@ -15,6 +15,7 @@ import {
 import { COMPOSER_APPEND_EVENT, appendDraft } from "./composerBridge";
 import { setEnterQueues } from "./dock/persistence";
 import { activateSession } from "../app/sessionSelection";
+import { ensureEngineStarted } from "../app/engineAutoStart";
 
 /** Everything the Composer reads — one definition drives both its props type
  * and its memo comparator (state/slices.ts). */
@@ -249,6 +250,13 @@ export function Composer({ state, onError }: Props) {
     const myGen = draftGen.current;
     void enqueuing.run(async () => {
       try {
+        // T-125: queueing must not demand a manually-started engine — start it
+        // (latest-wins scheduler) when it is stopped/failed, then enqueue once
+        // it has left the startable state. Bounded; a wedged start errors.
+        if (!(await ensureEngineStarted(engineId, workspaceId, onError))) {
+          throw new Error(`Engine ${engineId} did not start for queueing`);
+        }
+        if (myGen !== draftGen.current) return;
         await commands.queueEnqueue({
           workspaceId,
           engineId,

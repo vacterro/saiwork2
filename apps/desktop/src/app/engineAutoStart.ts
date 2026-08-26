@@ -155,3 +155,59 @@ export function resetEngineAutoStartForTest(): void {
   pending = null;
   running = false;
 }
+
+/** T-125: true when the selected engine is in a state a `start` can leave
+ * (never started / stopped / failed / unknown), so the user-facing send and
+ * queue paths can auto-start it without demanding a manual engine toggle.
+ * A READY runtime (already bound or workspace-agnostic), a bound-degraded one,
+ * or one mid-`starting` is NOT this helper's job: the former needs no start,
+ * the latter must not be raced, and degraded must be stopped before restart
+ * (all owned by `requestEngineAutoStart` / the Engine toggle, not here). */
+export function engineCanBeAutoStarted(engineId: string | null): boolean {
+  if (!engineId) return false;
+  const engine = store.getState().engines.find((item) => item.id === engineId);
+  if (!engine) return false;
+  const kind = healthKind(engine.health);
+  return kind === "stopped" || kind === "failed" || kind === "unknown";
+}
+
+/** T-125: true when the engine has reached any terminal (non-`starting`) state.
+ * Subscribe-driven, NOT a poll: one watcher on the authoritative store + a
+ * bounded safety timeout. */
+
+function waitUntilNotStartable(engineId: string, timeoutMs = 30_000): Promise<boolean> {
+  const notStartableNow = (): boolean => !engineCanBeAutoStarted(engineId);
+  return new Promise((resolve) => {
+    if (notStartableNow()) {
+      resolve(true);
+      return;
+    }
+    let unsub: (() => void) | null = null;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    const finish = (value: boolean) => {
+      unsub?.();
+      if (timer) clearTimeout(timer);
+      resolve(value);
+    };
+    unsub = store.subscribe(() => {
+      if (notStartableNow()) finish(true);
+    });
+    timer = setTimeout(() => finish(false), timeoutMs);
+  });
+}
+
+/** T-125: auto-start the selected engine (latest-wins scheduler for project
+ *  select + queue), then wait for it to leave the startable state so the
+ *  caller's follow-up command (send / enqueue) can proceed. Bounded wait — a
+ *  wedged start resolves false instead of parking the caller. Returns false
+ *  when the engine could not be started or stayed startable too long. */
+export async function ensureEngineStarted(
+  engineId: string | null,
+  workspaceId: string | null,
+  onError: (message: string) => void = () => undefined,
+  timeoutMs = 30_000,
+): Promise<boolean> {
+  if (!engineCanBeAutoStarted(engineId)) return true; // already terminal-safe
+  await requestEngineAutoStart(engineId, workspaceId, onError);
+  return waitUntilNotStartable(engineId ?? "", timeoutMs);
+}

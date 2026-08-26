@@ -3,6 +3,7 @@ import type { EngineInfo } from "@saiwork2/contracts";
 import { commands } from "./backend";
 import { store } from "../state/store";
 import { requestEngineAutoStart, resetEngineAutoStartForTest } from "./engineAutoStart";
+import { engineCanBeAutoStarted, ensureEngineStarted } from "./engineAutoStart";
 
 function engine(health: EngineInfo["health"], bound: string | null): EngineInfo {
   return {
@@ -83,11 +84,51 @@ describe("latest-intent engine auto-start", () => {
     for (let i = 0; i < 8; i++) await Promise.resolve();
     const b = requestEngineAutoStart("opencode", "workspace-b");
 
-    // The manual Start(A) settles terminal: READY bound to workspace-a.
+    // The manual Start(A) settles terminal: READY bound to workspace.
     store.patch((s) => ({ ...s, engines: [engine("ready", "workspace-a")] }));
 
     await Promise.all([a, b]);
     expect(starts).toEqual([["opencode", "workspace-b"]]);
     expect(stop).toHaveBeenCalledTimes(1);
   });
+
+  describe("engineCanBeAutoStarted / ensureEngineStarted (T-125)", () => {
+  it("reports startable only for stopped/failed/unknown engines", async () => {
+    store.resetForTest();
+    store.patch((s) => ({ ...s, engines: [engine("ready", null)] }));
+    expect(engineCanBeAutoStarted("opencode")).toBe(false);
+    store.patch((s) => ({ ...s, engines: [engine("starting", null)] }));
+    expect(engineCanBeAutoStarted("opencode")).toBe(false);
+    store.patch((s) => ({ ...s, engines: [engine("stopped", null)] }));
+    expect(engineCanBeAutoStarted("opencode")).toBe(true);
+    store.patch((s) => ({ ...s, engines: [engine({ kind: "failed", message: "boom" }, null)] }));
+    expect(engineCanBeAutoStarted("opencode")).toBe(true);
+    expect(engineCanBeAutoStarted(null)).toBe(false);
+  });
+
+  it("starts a startable engine and resolves once it leaves startable", async () => {
+    vi.spyOn(commands, "listEngines").mockResolvedValue([engine("stopped", null)]);
+    const start = vi.spyOn(commands, "startEngine").mockResolvedValue(undefined);
+    store.patch((s) => ({ ...s, engines: [engine("stopped", null)] }));
+
+    const settled = ensureEngineStarted("opencode", "workspace-a");
+    // The auto-start sends the start command and returns; the engine then gets
+    // an authoritative READY event. Resolve the wait via the store watcher.
+    await Promise.resolve();
+    await Promise.resolve();
+    store.patch((s) => ({ ...s, engines: [engine("ready", "workspace-a")] }));
+
+    expect(start).toHaveBeenCalledWith("opencode", "workspace-a");
+    expect(await settled).toBe(true);
+  });
+
+  it("already-ready engines resolve immediately without a start", async () => {
+    vi.spyOn(commands, "listEngines").mockResolvedValue([engine("ready", null)]);
+    const start = vi.spyOn(commands, "startEngine").mockResolvedValue(undefined);
+    store.patch((s) => ({ ...s, engines: [engine("ready", null)] }));
+
+    expect(await ensureEngineStarted("opencode", "workspace-a")).toBe(true);
+    expect(start).not.toHaveBeenCalled();
+  });
+});
 });

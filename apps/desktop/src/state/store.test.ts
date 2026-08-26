@@ -11,6 +11,9 @@ import {
   favoritesGen,
   nextFavoritesGen,
   MAX_FAVORITES_UI,
+  boundUnreadAnswers,
+  clearUnreadAnswers,
+  MAX_UNREAD_ANSWER_ENTRIES,
   type AppState,
 } from "./store";
 import type { Envelope } from "@saiwork2/contracts";
@@ -453,6 +456,51 @@ describe("uncertain user turns are bound to their RunId (TASK 24 §9)", () => {
     markUserMessageUncertain("s2", u3, "r9");
     dispatch("message.completed", { session_id: "s2", run_id: "r2" });
     expect(store.getState().messages.s2!.find((x) => x.id === u3)!.uncertain).toBe(true);
+  });
+});
+
+describe("T-126 unread-answer badges", () => {
+  it("a completed answer for a BACKGROUND session increments its badge", () => {
+    seedSession("s-bg");
+    // No active session: every completed answer is background.
+    store.patch((s) => ({ ...s, activeSessionId: null }));
+    dispatch("message.started", { session_id: "s-bg", run_id: "r1", engine_id: "fake" });
+    dispatch("message.completed", { session_id: "s-bg", run_id: "r1" });
+    expect(store.getState().unreadAnswers["s-bg"]).toBe(1);
+    dispatch("message.started", { session_id: "s-bg", run_id: "r2", engine_id: "fake" });
+    dispatch("message.completed", { session_id: "s-bg", run_id: "r2" });
+    expect(store.getState().unreadAnswers["s-bg"]).toBe(2);
+  });
+
+  it("the ACTIVE session never gets a badge (the answer is on screen)", () => {
+    store.patch((s) => ({ ...s, activeSessionId: "s1" }));
+    dispatch("message.started", { session_id: "s1", run_id: "r1", engine_id: "fake" });
+    dispatch("message.completed", { session_id: "s1", run_id: "r1" });
+    expect(store.getState().unreadAnswers["s1"]).toBeUndefined();
+  });
+
+  it("clearUnreadAnswers drops exactly the activated session's badge", () => {
+    seedSession("s-a");
+    seedSession("s-b");
+    store.patch((s) => ({
+      ...s,
+      unreadAnswers: { "s-a": 2, "s-b": 1 },
+    }));
+    const cleared = clearUnreadAnswers(store.getState(), "s-a");
+    expect(cleared.unreadAnswers).toEqual({ "s-b": 1 });
+    // Clearing an absent key is a no-op returning the SAME state (no churn).
+    const again = clearUnreadAnswers(cleared, "s-a");
+    expect(again).toBe(cleared);
+  });
+
+  it("the badge map is bounded — oldest entries drop first (no unbounded map)", () => {
+    const flooded: Record<string, number> = {};
+    for (let i = 0; i < MAX_UNREAD_ANSWER_ENTRIES + 10; i++) flooded[`old-${i}`] = 1;
+    const bounded = boundUnreadAnswers(flooded);
+    expect(Object.keys(bounded).length).toBe(MAX_UNREAD_ANSWER_ENTRIES);
+    // The OLDEST keys (lowest insertion index) are the dropped ones.
+    expect(bounded["old-0"]).toBeUndefined();
+    expect(bounded[`old-${MAX_UNREAD_ANSWER_ENTRIES + 9}`]).toBe(1);
   });
 });
 

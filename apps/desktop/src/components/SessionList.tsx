@@ -18,6 +18,7 @@ export const sessionListKeys = [
   "runningStale",
   "stoppingEngines",
   "lifecycle",
+  "unreadAnswers",
 ] as const;
 
 type Props = SliceProps<(typeof sessionListKeys)[number]>;
@@ -77,6 +78,9 @@ export function SessionList({ state, onError }: Props) {
           // CORE-014: Use canonical session eligibility.
           const activate$ = sessionActivationAvailability(s, state);
           const muted = !activate$.allowed;
+          // T-126: completed answers that landed while this thread was in the
+          // background — the "answer ready" badge.
+          const unread = state.unreadAnswers[s.id] ?? 0;
           return (
             <li key={s.id} className="sessions__row">
               <button
@@ -92,6 +96,11 @@ export function SessionList({ state, onError }: Props) {
                 <span className="sessions__item-title">
                   {s.display_name}
                   {s.running && <span className="dot dot--running" title="running" />}
+                  {unread > 0 && (
+                    <span className="sessions__badge" title={`${unread} answer${unread === 1 ? "" : "s"} ready`}>
+                      {unread > 9 ? "9+" : unread}
+                    </span>
+                  )}
                   {muted && <span className="sessions__item-muted">({s.usable_now === false ? "unusable now" : s.engine_id})</span>}
                 </span>
                 <span className="sessions__item-meta">
